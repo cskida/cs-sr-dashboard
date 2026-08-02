@@ -843,17 +843,32 @@ function detailRow(d) {
   ];
 }
 
+// Grid.js instances are cached per container and updated via updateConfig()+forceRender()
+// rather than recreated each time. Recreating a `new gridjs.Grid()` on a container that
+// already hosts a rendered grid (even after clearing innerHTML) leaves Grid.js's internal
+// state out of sync with the DOM, so a later render can silently keep showing the row
+// count from the very first render regardless of the new data passed in. Reusing the same
+// instance and calling updateConfig()/forceRender() is the officially supported way to
+// refresh an existing grid and avoids that bug entirely.
+const gridRegistry = {};
 function renderTableInto(containerId, data, nameLabel, limit) {
   const container = document.getElementById(containerId);
-  container.innerHTML = '';
-  new gridjs.Grid({
-    columns: DETAIL_COLUMNS(nameLabel),
-    data: data.map(detailRow),
-    sort: true, search: true,
-    pagination: { limit: limit || 20 },
-    style: { table: { fontSize: '12px', width: '100%' } },
-    width: '100%'
-  }).render(container);
+  const columns = DETAIL_COLUMNS(nameLabel);
+  const rows = data.map(detailRow);
+  const paginationCfg = { limit: limit || 20 };
+  if (gridRegistry[containerId]) {
+    gridRegistry[containerId].updateConfig({ columns, data: rows, pagination: paginationCfg }).forceRender();
+  } else {
+    container.innerHTML = '';
+    const grid = new gridjs.Grid({
+      columns, data: rows, sort: true, search: true,
+      pagination: paginationCfg,
+      style: { table: { fontSize: '12px', width: '100%' } },
+      width: '100%'
+    });
+    gridRegistry[containerId] = grid;
+    grid.render(container);
+  }
 }
 
 function renderDetailTable(axis) {
@@ -1001,8 +1016,10 @@ function setPage(page) {
   ['overall', 'location', 'allcategory', 'category'].forEach(p => document.getElementById('page-' + p).classList.toggle('active', p === page));
   ctlLoc.classList.toggle('visible', page === 'location');
   ctlCat.classList.toggle('visible', page === 'category');
-  if (page === 'location' && (!locSel.value || locSel.value === '__ALL__') && locations.length) locSel.value = locations[0];
-  if (page === 'category' && (!catSel.value || catSel.value === '__ALL__') && categories.length) catSel.value = categories[0];
+  const firstRealLocation = locations.find(l => l !== '(不明)') || locations[0];
+  const firstRealCategory = categories.find(c => c !== '不明') || categories[0];
+  if (page === 'location' && (!locSel.value || locSel.value === '__ALL__') && locations.length) locSel.value = firstRealLocation;
+  if (page === 'category' && (!catSel.value || catSel.value === '__ALL__') && categories.length) catSel.value = firstRealCategory;
   renderPageContent();
 }
 
