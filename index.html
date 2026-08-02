@@ -62,12 +62,13 @@
   .mini-chart-card.tall { height: 340px; }
   .mini-chart-card.tall canvas { max-height: 285px; }
   .table-section { margin-bottom:20px; width:100%; overflow-x:auto; }
-  .table-section table { font-size:12px; width:100% !important; }
+  .table-section table { font-size:12px; }
   #detailTable { font-size:12px; width:100%; }
-  #detailTable th, #detailTable td { white-space: normal !important; word-break: break-word; vertical-align: top; }
+  #detailTable th, #detailTable td { white-space: normal !important; word-break: break-word; vertical-align: top; min-width:88px; }
+  #detailTable th:first-child, #detailTable td:first-child { min-width:110px; }
   #detailTable th { line-height:1.3; }
   .gridjs-wrapper { width:100% !important; }
-  .gridjs-table { width:100% !important; }
+  .gridjs-table { width:auto !important; min-width:100%; }
   .note { font-size:11.5px; color:#888; margin-top:16px; line-height:1.6; }
   .badge { display:inline-block; padding:2px 8px; border-radius:10px; background:#eef1f5; color:#555; font-size:11px; margin-left:6px; }
 </style>
