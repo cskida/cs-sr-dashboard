@@ -348,10 +348,20 @@ function periodKeyFor(row, granularity) {
 const locations = Array.from(new Set(ROWS.map(r => r.location))).sort();
 const categories = Array.from(new Set(ROWS.map(r => r.category))).sort();
 
+// "(不明)"/"default" are data-quality placeholder values that happen to sort first
+// alphabetically (ASCII punctuation / lowercase Latin sort before Japanese characters).
+// A <select> auto-selects its first DOM option as soon as it has no explicit `selected`
+// option, so without this, locFilter/catFilter would silently default to these
+// placeholders on first page load, before any of our own JS ever runs.
+const firstRealLocation = locations.find(l => l !== '(不明)') || locations[0];
+const firstRealCategory = categories.find(c => c !== '不明' && c !== 'default') || categories[0];
+
 const locSel = document.getElementById('locFilter');
 locations.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; locSel.appendChild(o); });
+if (firstRealLocation) locSel.value = firstRealLocation;
 const catSel = document.getElementById('catFilter');
 categories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; catSel.appendChild(o); });
+if (firstRealCategory) catSel.value = firstRealCategory;
 
 const granSel = document.getElementById('granularity');
 const periodSel = document.getElementById('period');
@@ -1096,8 +1106,6 @@ function setPage(page) {
   ['overall', 'location', 'allcategory', 'category'].forEach(p => document.getElementById('page-' + p).classList.toggle('active', p === page));
   ctlLoc.classList.toggle('visible', page === 'location');
   ctlCat.classList.toggle('visible', page === 'category');
-  const firstRealLocation = locations.find(l => l !== '(不明)') || locations[0];
-  const firstRealCategory = categories.find(c => c !== '不明' && c !== 'default') || categories[0];
   if (page === 'location' && (!locSel.value || locSel.value === '__ALL__') && locations.length) locSel.value = firstRealLocation;
   if (page === 'category' && (!catSel.value || catSel.value === '__ALL__') && categories.length) catSel.value = firstRealCategory;
   renderPageContent();
