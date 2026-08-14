@@ -111,19 +111,24 @@ EXCLUDE_LOCATION_KEYWORDS = ["csセンター", "cs_center", "鳥取", "北関東
 CSV_ENCODING = "cp932"
 
 # ファイル名 -> 内部カテゴリキー への分類ルール(優先順に評価)
+# ファイル名は運用の時期によって新旧2通りある(どちらも中身は同じ):
+#   新: CS_登録 / CS_返金 / 受注_通常_出荷 / 受注_JPON_出荷 / 商品_出荷(JPONベース) / 商品_出品待
+#   旧: CSV_登録 / CSV_返金日 / 受注_通常_    / 受注_JPON_     / 商品V2_発送CSVアップロード / 商品V2_出品待ち_登録
+# 自動更新がどちらの命名でも動くように、両方を同じ内部キーに分類する。
 FILE_CLASSIFIERS = [
-    ("cs_bunruiyou", re.compile(r"^CS_登録【分類用】")),
-    ("cs_touroku", re.compile(r"^CS_登録(?!【分類用】)")),
-    ("cs_henkin", re.compile(r"^CS_返金")),
+    ("cs_bunruiyou", re.compile(r"^(CS|CSV)_登録【分類用】")),
+    ("cs_touroku", re.compile(r"^(CS|CSV)_登録(?!【分類用】)")),
+    ("cs_henkin", re.compile(r"^(CS_返金|CSV_返金)")),
     # 質問_登録も CS_登録 と同じ考え方で「【分類用】が存在する週はそちらを優先」する。
     # 【分類用】は通常版(24列)に カテゴリ/対応部署(J列参照。順次修正)/原因詳細/原因元/原因分類
     # の5列が追加されたもので、カテゴリが直接入っているため商品マスタ突合が不要になる。
     ("shitsumon_bunruiyou", re.compile(r"^質問_登録【分類用】")),
     ("shitsumon", re.compile(r"^質問_登録(?!【分類用】)")),
-    ("juchu_tsujo", re.compile(r"^受注_通常_出荷")),
-    ("juchu_jpon", re.compile(r"^受注_JPON_出荷")),
-    ("shohin_shukka", re.compile(r"^商品_出荷")),
-    ("shohin_shuppinmachi", re.compile(r"^商品_出品待")),
+    ("juchu_tsujo", re.compile(r"^受注_通常")),
+    ("juchu_jpon", re.compile(r"^受注_JPON")),
+    # 「商品V2_出品待ち_登録」を先に判定する(「商品V2_」で始まる点が発送用と共通のため)
+    ("shohin_shuppinmachi", re.compile(r"^(商品_出品待|商品V2_出品待)")),
+    ("shohin_shukka", re.compile(r"^(商品_出荷|商品V2_発送)")),
 ]
 
 MONTH_FOLDER_RE = re.compile(r"^(\d{4})年(\d{1,2})月$")
@@ -468,7 +473,26 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
         except Exception:
             df = None
     if df is None:
-        df = pd.read_csv(io.BytesIO(raw), encoding=CSV_ENCODING, dtype=str, low_memory=False)
+        # 週次エクスポートは基本CP932だが、担当者がUTF-8で保存し直したファイルが
+        # 混在することがある(Excelやスプレッドシート経由で保存すると起こりうる)。
+        # 文字コード違いだけで全体の集計が止まらないよう、候補を順に試す。
+        # 最後の手段として置換モードで読むが、その場合は警告を出す。
+        last_err = None
+        for enc in (CSV_ENCODING, "utf-8-sig", "utf-8", "cp932"):
+            try:
+                df = pd.read_csv(io.BytesIO(raw), encoding=enc, dtype=str, low_memory=False)
+                if enc != CSV_ENCODING:
+                    print(f"[情報] CP932以外の文字コードで読み込みました: {enc}", flush=True)
+                break
+            except UnicodeDecodeError as e:
+                last_err = e
+                df = None
+        if df is None:
+            print(f"[警告] 文字コードを判定できないため、読めない文字を置換して読み込みます: {last_err}", flush=True)
+            df = pd.read_csv(
+                io.BytesIO(raw), encoding=CSV_ENCODING, encoding_errors="replace",
+                dtype=str, low_memory=False,
+            )
         try:
             _DISK_PARSE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             disk_cache_path.write_bytes(pickle.dumps(df))
