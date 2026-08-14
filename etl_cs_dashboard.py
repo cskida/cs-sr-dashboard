@@ -256,7 +256,17 @@ class LiveDriveBackend(BaseDriveBackend):
                 .execute()
             )
             for f in resp.get("files", []):
-                results.append(DriveFile(id=f["id"], name=f["name"], mime_type=f["mimeType"]))
+                mime = f["mimeType"]
+                name = f["name"]
+                # フォルダはそのまま。それ以外は「拡張子が.csvの通常ファイル」だけを対象にする。
+                # 手順書メモ(.txt)やGoogleスプレッドシート・ショートカットなどが同じフォルダに
+                # 置かれていても、CSVとして読もうとして落ちないようにするため。
+                if mime != GOOGLE_DRIVE_FOLDER_MIME:
+                    if mime.startswith("application/vnd.google-apps."):
+                        continue
+                    if not name.lower().endswith(".csv"):
+                        continue
+                results.append(DriveFile(id=f["id"], name=name, mime_type=mime))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -405,6 +415,14 @@ def discover_week_files(backend: BaseDriveBackend, fiscal_root_id: str) -> list[
             if key == "shitsumon" and "shitsumon_bunruiyou" in week_files.files:
                 continue
             raw = backend.download_bytes(f.id)
+            # ここで一度パースしてみて、CSVとして読めないファイルは警告を出して除外する。
+            # (1ファイルの不備で全体の集計が止まらないようにするため。パース結果は
+            #  キャッシュされるので、この検証による二重パースのコストは発生しない)
+            try:
+                read_csv_bytes(raw)
+            except Exception as exc:
+                print(f"[警告] CSVとして読めないためスキップします: {f.name} ({type(exc).__name__}: {exc})", flush=True)
+                continue
             if key == "cs_bunruiyou":
                 # 分類用が来たら通常版を捨てる
                 week_files.files.pop("cs_touroku", None)
