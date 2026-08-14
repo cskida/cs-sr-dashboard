@@ -110,6 +110,19 @@ EXCLUDE_LOCATION_KEYWORDS = ["csセンター", "cs_center", "鳥取", "北関東
 
 CSV_ENCODING = "cp932"
 
+# ---------------------------------------------------------------------------
+# 消費税の扱い(⑥粗利差異・⑦赤字ページの計算はすべて税抜で統一する)
+#   税抜のまま使う : 落札価格(ヤフオク落札額)
+#   税込 -> ÷1.1   : 販売価格 / 買取価格 / ヤフオク配送料 / 送料(受注_通常_出荷) / 返金額
+# 元データの税表記は運用担当者への確認結果に基づく(2026-08時点)。
+# ---------------------------------------------------------------------------
+TAX_RATE = 1.1
+
+
+def to_excl_tax(v):
+    """税込金額を税抜に換算する。"""
+    return v / TAX_RATE
+
 # ファイル名 -> 内部カテゴリキー への分類ルール(優先順に評価)
 # ファイル名は運用の時期によって新旧2通りある(どちらも中身は同じ):
 #   新: CS_登録 / CS_返金 / 受注_通常_出荷 / 受注_JPON_出荷 / 商品_出荷(JPONベース) / 商品_出品待
@@ -454,7 +467,7 @@ def compute_data_through(weeks: list[WeekFiles]) -> Optional[str]:
 
 
 
-_READ_CSV_CACHE: dict[int, pd.DataFrame] = {}
+_READ_CSV_CACHE: dict[str, pd.DataFrame] = {}
 
 # ディスク上のパース結果キャッシュ(実行プロセスをまたいだ高速化用)。
 # 生のCSVバイト列のMD5ハッシュをキーにpickle化したDataFrameを保存する。
@@ -474,15 +487,19 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
     加えて、実行プロセスをまたいだディスクキャッシュ(内容のMD5ハッシュ単位)も
     参照する。存在すればCP932でのCSVパースをスキップしてpickleから復元する。
     """
-    cache_key = id(raw)
-    cached = _READ_CSV_CACHE.get(cache_key)
-    if cached is not None:
-        return cached.copy()
-
+    # 【重要】キャッシュのキーは必ず「中身のハッシュ」にすること。
+    # 以前は id(raw)(メモリアドレス)をキーにしていたが、Pythonは解放されたオブジェクトの
+    # idを再利用するため、読み捨てたファイルのidを後続ファイルが再利用すると
+    # 「別のファイルのパース結果」を返してしまい、集計値が実行ごとに変わる不具合があった
+    # (同一データで SR件数が 490/566/703 と揺れる事象を確認)。
     import hashlib
     import pickle
 
     digest = hashlib.md5(raw).hexdigest()
+    cached = _READ_CSV_CACHE.get(digest)
+    if cached is not None:
+        return cached.copy()
+
     disk_cache_path = _DISK_PARSE_CACHE_DIR / f"{digest}.pkl"
     df: Optional[pd.DataFrame] = None
     if disk_cache_path.exists():
@@ -516,7 +533,7 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
             disk_cache_path.write_bytes(pickle.dumps(df))
         except Exception:
             pass
-    _READ_CSV_CACHE[cache_key] = df
+    _READ_CSV_CACHE[digest] = df
     return df.copy()
 
 
@@ -1359,8 +1376,11 @@ def build_shukka_detail(
     all_df["落札価格_num"] = to_numeric(all_df["落札価格"])
     all_df["販売価格_num"] = to_numeric(all_df["販売価格"])
     all_df["買取価格_num"] = to_numeric(all_df["買取価格"])
-    all_df["expected_profit"] = all_df["販売価格_num"] - all_df["買取価格_num"] / 1.1
-    all_df["actual_profit"] = all_df["落札価格_num"] - all_df["買取価格_num"] / 1.1
+    # 税抜で統一する: 販売価格・買取価格は税込のため÷1.1、落札価格は税抜なのでそのまま。
+    all_df["販売価格_税抜"] = to_excl_tax(all_df["販売価格_num"])
+    all_df["買取価格_税抜"] = to_excl_tax(all_df["買取価格_num"])
+    all_df["expected_profit"] = all_df["販売価格_税抜"] - all_df["買取価格_税抜"]
+    all_df["actual_profit"] = all_df["落札価格_num"] - all_df["買取価格_税抜"]
     all_df["variance"] = all_df["actual_profit"] - all_df["expected_profit"]
     bands = all_df["落札価格_num"].map(price_band_of)
     all_df["price_band"] = bands.map(lambda t: t[0])
@@ -1399,6 +1419,8 @@ def build_shukka_detail(
             lambda nid: shipping_fee_master.get(nid, 0.0) if nid else 0.0
         )
         all_df.loc[is_rakuraku, "shipping_fee"] = looked_up
+    # ヤフオク配送料・受注_通常_出荷の送料はいずれも税込なので税抜に換算する
+    all_df["shipping_fee"] = to_excl_tax(all_df["shipping_fee"])
 
     # リードタイム = 落札日 - 買取日(日数)。いずれかが不正な日付の場合はNaN。
     buy_dt = pd.to_datetime(all_df["買取"], errors="coerce")
@@ -1980,10 +2002,11 @@ def aggregate_deficit(
     return_ids = build_return_product_ids(weeks)
 
     def _return_ship(norm_id):
+        # 返送料はヤフオク配送料そのもの(税込)なので、税抜に換算して赤字額に加える
         if not norm_id or norm_id not in return_ids:
             return 0.0
         info = cost_master.get(norm_id)
-        return info[1] if info else 0.0
+        return to_excl_tax(info[1]) if info else 0.0
 
     deficit["return_shipping_amount"] = deficit["norm_product_id"].map(_return_ship)
     deficit["deficit_amount"] = (-deficit["net_profit"]) + deficit["return_shipping_amount"]

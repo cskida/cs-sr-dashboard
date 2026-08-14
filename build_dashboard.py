@@ -221,8 +221,8 @@ html = r'''<!DOCTYPE html>
 
 <div class="page-nav">
   <button class="page-nav-btn active" id="navBtnOverall" type="button">① 全拠点</button>
-  <button class="page-nav-btn" id="navBtnDetail" type="button">② 拠点×カテゴリ</button>
-  <button class="page-nav-btn" id="navBtnAllCategory" type="button">③ 全カテゴリ</button>
+  <button class="page-nav-btn" id="navBtnAllCategory" type="button">② 全カテゴリ</button>
+  <button class="page-nav-btn" id="navBtnDetail" type="button">③ 拠点×カテゴリ</button>
   <button class="page-nav-btn" id="navBtnCondition" type="button">④ コンディション</button>
   <button class="page-nav-btn" id="navBtnPriceBand" type="button">⑤ 価格帯</button>
   <button class="page-nav-btn" id="navBtnProfitVariance" type="button">⑥ 粗利差異</button>
@@ -276,16 +276,19 @@ html = r'''<!DOCTYPE html>
       <div class="kpi-title">サービスリクエスト発生件数</div>
       <div class="kpi-row"><span class="kpi-main" id="kpiSrCount">-</span><span class="kpi-rate" id="kpiSrRate">率 -</span></div>
       <div class="kpi-delta" id="kpiSrDelta"></div>
+      <div class="kpi-delta" id="kpiSrForecast" style="color:#2455c9;"></div>
     </div>
     <div class="card kpi-card">
       <div class="kpi-title">返金額</div>
       <div class="kpi-row"><span class="kpi-main" id="kpiRefundAmount">-</span><span class="kpi-rate" id="kpiRefundRate">率 -</span></div>
       <div class="kpi-delta" id="kpiRefundDelta"></div>
+      <div class="kpi-delta" id="kpiRefundForecast" style="color:#2455c9;"></div>
     </div>
     <div class="card kpi-card">
       <div class="kpi-title">返金件数</div>
       <div class="kpi-row"><span class="kpi-main" id="kpiRefundCount">-</span><span class="kpi-rate" id="kpiRefundCountRate">1件あたり -</span></div>
       <div class="kpi-delta" id="kpiRefundCountDelta"></div>
+      <div class="kpi-delta" id="kpiRefundCountForecast" style="color:#2455c9;"></div>
     </div>
     <div class="card kpi-card">
       <div class="kpi-title">問合せ (CS_登録 種別=CS)</div>
@@ -1575,6 +1578,51 @@ function donutMajorConfig(majors, counts) {
 }
 
 // ---------- ① 全拠点ページ ----------
+// 期間の経過率(着地率)から着地見込みを計算する。
+// 例: 月次で8/12までのデータなら 12/31日=38.7%経過 -> 実績÷0.387 が着地見込み。
+// 週次は期間が短く振れが大きいので対象外。期間が既に終わっている場合は表示しない。
+function periodProgress(granularity, periodKey) {
+  if (granularity === 'week' || periodKey === '__ALL__' || !DATA.data_through) return null;
+  const rows = ROWS.filter(r => periodKeyFor(r, granularity).key === periodKey);
+  if (!rows.length) return null;
+  const dates = rows.map(r => r.week_start).sort();
+  const through = DATA.data_through;
+
+  // 対象期間の開始日・終了日を粒度から求める
+  const [fy, fm] = dates[0].split('-').map(Number);
+  let start, end;
+  if (granularity === 'month') {
+    start = new Date(Date.UTC(fy, fm - 1, 1));
+    end = new Date(Date.UTC(fy, fm, 0));
+  } else {
+    const fi = fiscalInfo(dates[0].slice(0, 7));
+    const fyStartMonth = FY_START_M - 1;
+    const baseYear = FY_START_Y + (fi.fyNum - BASE_FY_NUM);
+    let offset = 0, months = 12;
+    if (granularity === 'quarter') { offset = (fi.quarter - 1) * 3; months = 3; }
+    else if (granularity === 'half') { offset = (fi.half === '上期' ? 0 : 6); months = 6; }
+    start = new Date(Date.UTC(baseYear, fyStartMonth + offset, 1));
+    end = new Date(Date.UTC(baseYear, fyStartMonth + offset + months, 0));
+  }
+  const t = new Date(through + 'T00:00:00Z');
+  if (t >= end) return null;               // 期間が終了済み(見込み不要)
+  if (t < start) return null;
+  const totalDays = (end - start) / 86400000 + 1;
+  const doneDays = (t - start) / 86400000 + 1;
+  const ratio = doneDays / totalDays;
+  if (ratio <= 0 || ratio >= 1) return null;
+  return { ratio, doneDays: Math.round(doneDays), totalDays: Math.round(totalDays) };
+}
+
+function renderForecast(elId, actual, prog, isMoney) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!prog || actual == null) { el.textContent = ''; return; }
+  const est = actual / prog.ratio;
+  el.textContent = '着地見込み ' + (isMoney ? fmtYen(est) : fmtInt(est)) +
+    '(進捗 ' + prog.doneDays + '/' + prog.totalDays + '日=' + (prog.ratio * 100).toFixed(0) + '%)';
+}
+
 function renderOverallKPIs() {
   const granularity = granSel.value;
   const periodKey = periodSel.value;
@@ -1592,6 +1640,12 @@ function renderOverallKPIs() {
   document.getElementById('kpiQuestionRate').textContent = '率 ' + fmtPct(d.question_rate);
   document.getElementById('kpiProfitAmount').textContent = fmtYen(d.final_profit);
   document.getElementById('kpiProfitRate').textContent = '率 ' + fmtPct(d.profit_margin);
+
+  // 着地見込み(SR発生件数・返金額・返金件数のみ。月次/四半期/半期/通期が対象)
+  const prog = periodProgress(granularity, periodKey);
+  renderForecast('kpiSrForecast', d.sr_count, prog, false);
+  renderForecast('kpiRefundForecast', d.refund_amount, prog, true);
+  renderForecast('kpiRefundCountForecast', d.refund_count, prog, false);
 
   ['Inquiry','Sr','Refund','RefundCount','Question','Profit'].forEach(id => document.getElementById('kpi'+id+'Delta').textContent = '');
   if (periodKey !== '__ALL__') {
@@ -1654,8 +1708,8 @@ function renderYoyBox(boxId, tableId, labelId, granularity, periodKey, rowFilter
   const prev = computeAgg(granularity, yoyKey, rowFilter);
   let out = '<table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr>' +
     '<th style="text-align:left;padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;">指標</th>' +
-    '<th style="padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;">今期</th>' +
     '<th style="padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;">前年同期</th>' +
+    '<th style="padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;">今期</th>' +
     '<th style="padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;">前年比</th></tr></thead><tbody>';
   YOY_METRICS.forEach(m => {
     const cv = cur[m.key], pv = prev[m.key];
@@ -1677,8 +1731,8 @@ function renderYoyBox(boxId, tableId, labelId, granularity, periodKey, rowFilter
       }
     }
     out += '<tr><td style="padding:6px 10px;border:1px solid #e3e5e8;">' + m.label + '</td>' +
-      '<td style="padding:6px 10px;border:1px solid #e3e5e8;text-align:right;">' + fmt(cv) + '</td>' +
       '<td style="padding:6px 10px;border:1px solid #e3e5e8;text-align:right;">' + fmt(pv) + '</td>' +
+      '<td style="padding:6px 10px;border:1px solid #e3e5e8;text-align:right;">' + fmt(cv) + '</td>' +
       '<td class="' + cls + '" style="padding:6px 10px;border:1px solid #e3e5e8;text-align:right;font-weight:600;">' + diffTxt + '</td></tr>';
   });
   out += '</tbody></table>';
@@ -1761,11 +1815,54 @@ function renderInsights() {
     if (!cats.length) {
       catContainer.innerHTML = '<p class="note">カテゴリ別所見は次回の週次更新で追加されます。</p>';
     } else {
-      catContainer.innerHTML = cats.map(k => {
-        const dyn = buildDynamicPeriodInsight(r => r.category === k);
-        const memo = byCat[k] ? ('<br>(参考)手動メモ: ' + byCat[k]) : '';
-        return '<div class="category-insight-card"><h4>' + k + '</h4><div>' + dyn + memo + '</div></div>';
-      }).join('');
+      // 全カテゴリを並べると読み切れないため、「特筆すべきカテゴリ」だけに絞る。
+      //   悪化: 前期間比でSR率または返金率(対出荷)が0.30ポイント以上悪化
+      //   高水準: SR率または返金率が全カテゴリ平均の1.3倍以上
+      // どちらかに該当するものを、悪化幅・超過幅の大きい順に最大6件表示する。
+      const gran = granSel.value, pkey = periodSel.value;
+      const periods = availablePeriods(gran);
+      const idx = periods.findIndex(p => p.key === pkey);
+      const prevKey = idx > 0 ? periods[idx - 1].key : null;
+      const whole = deriveRates(computeAgg(gran, pkey, null));
+      const avgSr = whole.sr_rate || 0, avgRefund = whole.shipped_count ? (whole.refund_count / whole.shipped_count) : 0;
+
+      const scored = cats.map(k => {
+        const filt = r => r.category === k;
+        const cur = deriveRates(computeAgg(gran, pkey, filt));
+        const shipped = cur.shipped_count || 0;
+        if (shipped < 30) return null;   // 母数が小さすぎるカテゴリは対象外
+        const curRefundRate = shipped ? cur.refund_count / shipped : 0;
+        let dSr = 0, dRefund = 0;
+        if (prevKey) {
+          const prv = deriveRates(computeAgg(gran, prevKey, filt));
+          const prvShipped = prv.shipped_count || 0;
+          if (prvShipped >= 30) {
+            dSr = ((cur.sr_rate || 0) - (prv.sr_rate || 0)) * 100;
+            dRefund = (curRefundRate - (prvShipped ? prv.refund_count / prvShipped : 0)) * 100;
+          }
+        }
+        const worsened = Math.max(dSr, dRefund);
+        const excess = Math.max(
+          avgSr ? (cur.sr_rate || 0) / avgSr : 0,
+          avgRefund ? curRefundRate / avgRefund : 0
+        );
+        const reasons = [];
+        if (worsened >= 0.30) reasons.push('前期間比で' + worsened.toFixed(2) + 'pt悪化');
+        if (excess >= 1.3) reasons.push('全体平均の' + excess.toFixed(1) + '倍の水準');
+        if (!reasons.length) return null;
+        return { name: k, score: Math.max(worsened, (excess - 1) * 10), reasons: reasons.join(' / ') };
+      }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 6);
+
+      if (!scored.length) {
+        catContainer.innerHTML = '<p class="note">この期間は、悪化・高水準のいずれにも該当する特筆すべきカテゴリはありませんでした(母数30件以上のカテゴリが対象)。</p>';
+      } else {
+        catContainer.innerHTML = scored.map(x => {
+          const dyn = buildDynamicPeriodInsight(r => r.category === x.name);
+          const memo = byCat[x.name] ? ('<br>(参考)手動メモ: ' + byCat[x.name]) : '';
+          return '<div class="category-insight-card"><h4>' + x.name +
+                 ' <span class="badge">' + x.reasons + '</span></h4><div>' + dyn + memo + '</div></div>';
+        }).join('');
+      }
     }
   }
 }
@@ -3125,7 +3222,8 @@ function renderCategoryPage() {
   }
   const catSet = new Set(selectedCats);
   const rowFilter = r => catSet.has(r.category);
-  const label = selectedCats.length === 1 ? selectedCats[0] : selectedCats.join(' + ') + '(合算・' + selectedCats.length + 'カテゴリ)';
+  const label = selectedCats.length >= categories.length ? '全カテゴリ'
+    : (selectedCats.length === 1 ? selectedCats[0] : selectedCats.join(' + ') + '(合算・' + selectedCats.length + 'カテゴリ)');
   document.getElementById('categoryDrillTitle').textContent = 'カテゴリ: ' + label + '(全カテゴリ平均と比較)';
 
   const granularity = granSel.value, periodKey = periodSel.value;
@@ -3173,7 +3271,10 @@ function renderLocCatPage() {
     if (opt) opt.selected = true;
   }
   const catSet = new Set(selectedCats);
-  const catLabel = selectedCats.length === 1 ? selectedCats[0] : selectedCats.join(' + ') + '(合算・' + selectedCats.length + 'カテゴリ)';
+  // 全カテゴリが選ばれている場合は、38個の名前を並べず「全カテゴリ」とだけ表示する
+  const isAllCats = selectedCats.length >= categories.length;
+  const catLabel = isAllCats ? '全カテゴリ'
+    : (selectedCats.length === 1 ? selectedCats[0] : selectedCats.join(' + ') + '(合算・' + selectedCats.length + 'カテゴリ)');
   document.getElementById('locCatDrillTitle').textContent = (isAllLoc ? '全拠点' : '拠点: ' + loc) + '  ×  カテゴリ: ' + catLabel;
 
   const granularity = granSel.value, periodKey = periodSel.value;
@@ -3234,7 +3335,7 @@ function renderPageContent() {
   else renderProfitVariancePage();
 }
 
-const ALL_PAGES = ['overall', 'detail', 'allcategory', 'condition', 'priceband', 'profitvariance', 'deficit', 'customer'];
+const ALL_PAGES = ['overall', 'allcategory', 'detail', 'condition', 'priceband', 'profitvariance', 'deficit', 'customer'];
 const PAGE_NAV_MAP = {
   overall: 'navBtnOverall', detail: 'navBtnDetail', allcategory: 'navBtnAllCategory',
   condition: 'navBtnCondition', priceband: 'navBtnPriceBand',
