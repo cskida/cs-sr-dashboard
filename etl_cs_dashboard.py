@@ -2237,9 +2237,64 @@ def build_customer_clusters(weeks: list[WeekFiles]) -> tuple[pd.DataFrame, list[
     n = len(tsujo)
     uf = _UnionFind(n)
     log: list[str] = []
+
+    # 【名寄せキーの見直し(2026-08)】
+    # 以前は「氏名だけの一致」でも同一人物とみなしていたため、同姓同名を起点に
+    # 住所→電話→氏名…と連鎖的に結合し、4,499通りの氏名・7,021取引が1人に
+    # まとめられる過剰結合が発生していた。対策として:
+    #   1. 氏名単独では結合しない。氏名は「住所+氏名」の複合キーとしてのみ使う。
+    #   2. 1つのキーに紐づく氏名が MAX_NAMES_PER_KEY を超える場合は、
+    #      配送センター・代行業者・ダミー値とみなして結合に使わない。
+    MAX_NAMES_PER_KEY = 5
+    addr_name_key = pd.Series(
+        [(a + "|" + nm) if (a and nm) else "" for a, nm in zip(addr_key, name_key)],
+        index=tsujo.index,
+    )
+
+    # 共有キー(1つの値に多数の氏名がぶら下がる値)は「個人」ではなく
+    # 転送代行業者・法人拠点とみなす。ただし単に無視するのではなく、
+    # その拠点単位で1グループにまとめたうえで「業者拠点」と印を付ける。
+    # こうすることで、
+    #   ・個人顧客の統計に業者がまぎれ込まない
+    #   ・業者拠点ごとのSR発生状況をまとめて確認できる
+    # の両方を満たせる。
+    biz_group_key = pd.Series([""] * n, index=tsujo.index)
+
+    def _split_shared_keys(key_series, key_label):
+        """個人用キーと、業者拠点用のグループキーに分ける。"""
+        names_per_value: dict[str, set] = {}
+        for value, nm in zip(key_series.to_numpy(), name_key.to_numpy()):
+            if not value:
+                continue
+            names_per_value.setdefault(value, set()).add(nm)
+        shared = {v for v, names in names_per_value.items() if len(names) > MAX_NAMES_PER_KEY}
+        if shared:
+            total = sum(1 for v in key_series.to_numpy() if v in shared)
+            print(f"[情報] {key_label}: {len(shared)}件の値(受注{total:,}件)は氏名が{MAX_NAMES_PER_KEY}種類を"
+                  f"超えるため「業者拠点」として個人とは別にまとめます", flush=True)
+            for idx, value in enumerate(key_series.to_numpy()):
+                if value in shared and not biz_group_key.iat[idx]:
+                    biz_group_key.iat[idx] = key_label + ":" + value
+        return key_series.map(lambda v: "" if (not v or v in shared) else v)
+
+    # 氏名との複合キー。電話・メールが「共有キー」として除外された場合でも、
+    # 氏名まで一致していれば同一人物とみなせるので、複合キーは除外の前に作っておく。
+    name_tel_key = pd.Series(
+        [(t + "|" + nm) if (t and nm) else "" for t, nm in zip(tel_key, name_key)], index=tsujo.index)
+    name_mail_key = pd.Series(
+        [(e + "|" + nm) if (e and nm) else "" for e, nm in zip(mail_key, name_key)], index=tsujo.index)
+
+    # 住所を先に判定する(同じ倉庫が電話・メールも共有しているケースを1グループにまとめるため)
+    addr_key_solo = _split_shared_keys(addr_key, "住所")
+    tel_key = _split_shared_keys(tel_key, "電話番号")
+    mail_key = _split_shared_keys(mail_key, "メールアドレス")
+
     for key_name, key_series in (
-        ("氏名", name_key),
-        ("住所", addr_key),
+        ("業者拠点", biz_group_key),
+        ("住所+氏名", addr_name_key),
+        ("電話番号+氏名", name_tel_key),
+        ("メールアドレス+氏名", name_mail_key),
+        ("住所", addr_key_solo),
         ("電話番号", tel_key),
         ("メールアドレス", mail_key),
     ):
@@ -2260,6 +2315,11 @@ def build_customer_clusters(weeks: list[WeekFiles]) -> tuple[pd.DataFrame, list[
 
     tsujo = tsujo.copy()
     tsujo["_cluster"] = [uf.find(i) for i in range(n)]
+    # クラスタ内に1件でも業者拠点キーがあれば、そのクラスタ全体を「業者拠点」とする
+    biz_clusters = set(tsujo.loc[biz_group_key != "", "_cluster"].unique())
+    tsujo["_customer_type"] = tsujo["_cluster"].map(lambda c: "業者拠点" if c in biz_clusters else "個人")
+    print(f"[情報] 業者拠点として扱うグループ: {len(biz_clusters):,}件 "
+          f"(受注{int((tsujo['_customer_type'] == '業者拠点').sum()):,}件)", flush=True)
     return tsujo, log
 
 
@@ -2301,6 +2361,7 @@ def build_customer_segment_rows(
             order_count=("受注ID", "size"),
             bundle_order_count=("_is_bundle", "sum"),
             sales_amount=("_sales", "sum"),
+            customer_type=("_customer_type", "first"),
         )
         .reset_index()
     )
@@ -2471,6 +2532,8 @@ def build_customer_segment_rows(
                 {
                     "segment": segment,
                     "label": r["label"],
+                    # 個人 / 業者拠点(転送代行・法人窓口とみなしたグループ)
+                    "customer_type": r.get("customer_type", "個人"),
                     "rank": int(r["rank"]),
                     "order_count": int(r["order_count"]),
                     "bundle_order_count": int(r["bundle_order_count"]),
@@ -2528,6 +2591,7 @@ def _build_customer_lookup_records(
         records.append(
             {
                 "顧客コード": label_of_cluster.get(cluster, ""),
+                "種別": g["_customer_type"].iloc[0] if "_customer_type" in g.columns else "個人",
                 "代表氏名": rep_name,
                 "カナ": _mode_value(rep_rows["カナ"]),
                 "電話番号": _mode_value(rep_rows["電話番号"]),
@@ -2547,6 +2611,7 @@ def _build_customer_lookup_records(
 
 CUSTOMER_LOOKUP_FIELDS = [
     "顧客コード",
+    "種別",
     "代表氏名",
     "カナ",
     "電話番号",

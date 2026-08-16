@@ -779,23 +779,32 @@ html = r'''<!DOCTYPE html>
       <label>発送商品数の下限(件)</label>
       <select id="custMinShipped">
         <option value="0">絞り込みなし</option>
-        <option value="2">2件以上</option>
-        <option value="3">3件以上</option>
-        <option value="5">5件以上</option>
         <option value="10">10件以上</option>
-        <option value="20">20件以上</option>
         <option value="50">50件以上</option>
+        <option value="100">100件以上</option>
+        <option value="300">300件以上</option>
+        <option value="500">500件以上</option>
+        <option value="700">700件以上</option>
+        <option value="1000">1000件以上</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>顧客種別</label>
+      <select id="custType">
+        <option value="__ALL__">すべて</option>
+        <option value="個人">個人のみ</option>
+        <option value="業者拠点">業者拠点のみ(転送代行・法人窓口)</option>
       </select>
     </div>
     <div class="ctl">
       <label>SR発生件数の下限(件)</label>
       <select id="custMinSr">
         <option value="0">絞り込みなし</option>
-        <option value="1">1件以上</option>
-        <option value="2">2件以上</option>
         <option value="3">3件以上</option>
         <option value="5">5件以上</option>
         <option value="10">10件以上</option>
+        <option value="20">20件以上</option>
+        <option value="30">30件以上</option>
       </select>
     </div>
     <div class="ctl">
@@ -2997,6 +3006,7 @@ function customerSegmentData(segment) {
   // Grid.js に渡す2次元配列も一度だけ作って使い回す(2万行の再生成を避ける)
   const tableRows = rows.map(r => [
     r.label,
+    r.customer_type || '個人',
     r.shipped_count,
     r.order_count ? r.bundle_order_count / r.order_count : null,
     r.shipped_count ? r.sr_count / r.shipped_count : null,
@@ -3011,6 +3021,7 @@ function customerSegmentData(segment) {
 
 const CUSTOMER_TABLE_COLUMNS = [
   { name: '顧客' },
+  { name: '種別' },
   { name: '発送商品数', formatter: c => fmtInt(c) },
   { name: '同梱率', formatter: c => fmtPct(c) },
   { name: 'SR率', formatter: c => fmtPct(c) },
@@ -3027,8 +3038,12 @@ function customerFilteredData(segment) {
   const base = customerSegmentData(segment);
   const minShipped = parseInt((document.getElementById('custMinShipped') || {}).value || '0', 10);
   const minSr = parseInt((document.getElementById('custMinSr') || {}).value || '0', 10);
-  if (!minShipped && !minSr) return { agg: base.agg, tableRows: base.tableRows, filtered: false, total: base.rows.length };
-  const rows = base.rows.filter(r => (r.shipped_count || 0) >= minShipped && (r.sr_count || 0) >= minSr);
+  const custType = (document.getElementById('custType') || {}).value || '__ALL__';
+  if (!minShipped && !minSr && custType === '__ALL__') {
+    return { agg: base.agg, tableRows: base.tableRows, filtered: false, total: base.rows.length };
+  }
+  const rows = base.rows.filter(r => (r.shipped_count || 0) >= minShipped && (r.sr_count || 0) >= minSr &&
+    (custType === '__ALL__' || (r.customer_type || '個人') === custType));
   const agg = {
     customer_count: rows.length, order_count: 0, bundle_order_count: 0, shipped_count: 0,
     sr_count: 0, sales_amount: 0, gross_profit: 0, refund_amount: 0, return_shipping_cost: 0, final_profit: 0
@@ -3048,7 +3063,7 @@ function customerFilteredData(segment) {
   agg.sr_rate = agg.shipped_count ? agg.sr_count / agg.shipped_count : null;
   agg.refund_rate = agg.sales_amount ? agg.refund_amount / agg.sales_amount : null;
   const tableRows = rows.map(r => [
-    r.label, r.shipped_count,
+    r.label, r.customer_type || '個人', r.shipped_count,
     r.order_count ? r.bundle_order_count / r.order_count : null,
     r.shipped_count ? r.sr_count / r.shipped_count : null,
     r.sr_count, r.refund_amount,
@@ -3070,7 +3085,8 @@ function renderCustomerPage() {
   const noteEl = document.getElementById('custFilterNote');
   if (noteEl) {
     noteEl.textContent = filtered
-      ? ('絞り込み中: 発送' + minShipped + '件以上 かつ SR' + minSr + '件以上 → ' + fmtInt(agg.customer_count) + '人 / 全' + fmtInt(total) + '人')
+      ? ('絞り込み中: ' + ((document.getElementById('custType') || {}).value === '__ALL__' ? '個人+業者拠点' : (document.getElementById('custType') || {}).value) +
+         ' / 発送' + minShipped + '件以上 かつ SR' + minSr + '件以上 → ' + fmtInt(agg.customer_count) + '人 / 全' + fmtInt(total) + '人')
       : ('全' + fmtInt(total) + '人を表示中');
   }
   document.getElementById('customerKpiGrid').innerHTML = [
@@ -3371,7 +3387,7 @@ document.getElementById('navBtnProfitVariance').addEventListener('click', () => 
 
 document.getElementById('navBtnDeficit').addEventListener('click', () => setPage('deficit'));
 document.getElementById('navBtnCustomer').addEventListener('click', () => setPage('customer'));
-['custMinShipped', 'custMinSr'].forEach(id => {
+['custMinShipped', 'custMinSr', 'custType'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (currentPage === 'customer') renderCustomerPage(); });
 });
