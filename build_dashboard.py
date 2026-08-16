@@ -1961,13 +1961,24 @@ function renderOverallTrendCharts() {
   const granularity = granSel.value;
   const trend = buildTrendAligned(granularity, null);
   const labels = trend.map(t => t.label);
-
-  renderChart('trend_inquiry', dualAxisConfig(labels, trend.map(t => t.inquiry_count), trend.map(t => t.inquiry_rate), '問合せ件数', '問合せ率', '件数', false));
-  renderChart('trend_sr', dualAxisConfig(labels, trend.map(t => t.sr_count), trend.map(t => t.sr_rate), 'SR発生件数', 'SR発生率', '件数', false));
-  renderChart('trend_refund', dualAxisConfig(labels, trend.map(t => t.refund_amount), trend.map(t => t.refund_rate), '返金額', '返金額率', '金額(¥)', true));
-  renderChart('trend_question', dualAxisConfig(labels, trend.map(t => t.question_count), trend.map(t => t.question_rate), '質問数', '質問率', '件数', false));
-  renderChart('trend_profit', dualAxisConfig(labels, trend.map(t => t.final_profit), trend.map(t => t.profit_margin), '最終利益', '利益率', '金額(¥)', true));
-  renderChart('trend_junk', dualAxisConfig(labels, trend.map(t => t.junk_listed_count), trend.map(t => t.junk_listed_rate), 'ジャンク出品件数', 'ジャンク出品率', '件数', false));
+  const specs = [
+    ['trend_inquiry', 'inquiry_count', 'inquiry_rate', '問合せ件数', '問合せ率', '件数', false],
+    ['trend_sr', 'sr_count', 'sr_rate', 'SR発生件数', 'SR発生率', '件数', false],
+    ['trend_refund', 'refund_amount', 'refund_rate', '返金額', '返金額率', '金額(¥)', true],
+    ['trend_question', 'question_count', 'question_rate', '質問数', '質問率', '件数', false],
+    ['trend_profit', 'final_profit', 'profit_margin', '最終利益', '利益率', '金額(¥)', true],
+    ['trend_junk', 'junk_listed_count', 'junk_listed_rate', 'ジャンク出品件数', 'ジャンク出品率', '件数', false]
+  ];
+  // 月次のときは決算月(7月〜6月)を横軸に、期ごとの系列を重ねた昨対比較にする
+  const yoy = isYoyMode() ? buildYoyMonthlySeries(null) : null;
+  specs.forEach(([id, bar, line, barLabel, lineLabel, leftLabel, money]) => {
+    if (yoy && yoy.fyNums.length > 1) {
+      renderChart(id, yoyMonthlyConfig(yoy, bar, line, barLabel, lineLabel, leftLabel, money));
+    } else {
+      renderChart(id, dualAxisConfig(labels, trend.map(t => t[bar]), trend.map(t => t[line]),
+        barLabel, lineLabel, leftLabel, money));
+    }
+  });
 }
 
 const COMMON_SPECS = [
@@ -2143,7 +2154,46 @@ function renderImprovementSection(prefix, rowFilter) {
     const o = acc.get(pk.label);
     o[k] = (o[k] || 0) + (r.count || 0);
   });
-  renderChart(prefix + 'MinorTrend', {
+  // 月次のときは決算月(7月〜6月)を横軸に、期ごとの系列で昨対比較する
+  let minorTrendDone = false;
+  if (isYoyMode()) {
+    const order12 = [];
+    for (let i = 0; i < 12; i++) order12.push(((FY_START_M - 1 + i) % 12) + 1);
+    const byFyMonth = new Map();   // fyNum -> month -> 件数(上位小項目の合計)
+    SR_MAJOR_ROWS.forEach(r => {
+      if (rowFilter && !rowFilter(r)) return;
+      const k = r.major + ' > ' + (r.minor || '(小項目なし)');
+      if (!topMinors.includes(k)) return;
+      const fi = fiscalInfo(r.year_month);
+      const mm = parseInt(r.year_month.split('-')[1], 10);
+      if (!byFyMonth.has(fi.fyNum)) byFyMonth.set(fi.fyNum, new Map());
+      const mp = byFyMonth.get(fi.fyNum);
+      mp.set(mm, (mp.get(mm) || 0) + (r.count || 0));
+    });
+    const fys = Array.from(byFyMonth.keys()).sort((a, b) => a - b);
+    if (fys.length > 1) {
+      const barColors = ['#c9dbfa', '#8fb3f0', '#5b8def', '#12203f'];
+      renderChart(prefix + 'MinorTrend', {
+        type: 'bar',
+        data: {
+          labels: order12.map(m => m + '月'),
+          datasets: fys.map((fy, i) => ({
+            label: ordinalSuffix(fy) + ' 上位小項目のSR件数',
+            data: order12.map(m => (byFyMonth.get(fy) || new Map()).get(m) || 0),
+            backgroundColor: barColors[i % barColors.length]
+          }))
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { title: { display: true, text: '上位小項目のSR件数(期別の昨対比較)' },
+            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+      minorTrendDone = true;
+    }
+  }
+  if (!minorTrendDone) renderChart(prefix + 'MinorTrend', {
     type: 'line',
     data: {
       labels: periods.map(p => p.label),
@@ -2692,17 +2742,48 @@ function renderConditionPricePage(cfg) {
     const o = trendMap.get(pk.label);
     o[r[cfg.dim]] = (o[r[cfg.dim]] || 0) + (r.shipped_count || r.count || 0);
   });
-  renderChart(cfg.prefix + 'TrendChart', stackedMajorConfig(periods.map(p => p.label), order, trendMap));
+  if (isYoyMode()) {
+    // 月次: 決算月×期で、選択中の絞り込みに対する出荷件数を昨対比較する
+    const ser = buildYoyGeneric(cfg.rows, ['shipped_count', 'count', 'sr_count', 'sales_amount'], rowFilter);
+    if (ser.fyNums.length > 1) {
+      renderChart(cfg.prefix + 'TrendChart', yoyGenericConfig(ser, 'shipped_count',
+        d => (d.shipped_count || d.count) ? d.sr_count / (d.shipped_count || d.count) : null,
+        '出荷件数', 'SR率', '件数', false, cfg.dimLabel + '全体の出荷・SR率'));
+    } else {
+      renderChart(cfg.prefix + 'TrendChart', stackedMajorConfig(periods.map(p => p.label), order, trendMap));
+    }
+  } else {
+    renderChart(cfg.prefix + 'TrendChart', stackedMajorConfig(periods.map(p => p.label), order, trendMap));
+  }
 
-  // 率の推移
-  renderChart(cfg.prefix + 'SrRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
-    (o, r) => { o.num += r.sr_count || 0; o.den += (r.shipped_count || r.count || 0); }, true, 'SR率の推移(%)'));
-  renderChart(cfg.prefix + 'RefundRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
-    (o, r) => { o.num += r.refund_amount || 0; o.den += r.sales_amount || 0; }, true, '返金率の推移(金額ベース・%)'));
-  renderChart(cfg.prefix + 'ListedTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
-    (o, r) => { o.num += r.listed_count || 0; o.den += 1; }, false, '出品数の推移(件)'));
-  renderChart(cfg.prefix + 'QuestionRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
-    (o, r) => { o.num += r.question_count || 0; o.den += r.listed_count || 0; }, true, '質問率の推移(質問÷出品・%)'));
+  // 率の推移。月次のときは決算月×期の昨対比較にする。
+  const rateSpecs = [
+    ['SrRateTrend', 'sr_count', d => (d.shipped_count || d.count) ? d.sr_count / (d.shipped_count || d.count) : null,
+      'SR件数', 'SR率', '件数', false, 'SR件数・SR率'],
+    ['RefundRateTrend', 'refund_amount', d => d.sales_amount ? d.refund_amount / d.sales_amount : null,
+      '返金額', '返金率', '金額(¥)', true, '返金額・返金率(金額ベース)'],
+    ['ListedTrend', 'listed_count', null, '出品数', '', '件数', false, '出品数'],
+    ['QuestionRateTrend', 'question_count', d => d.listed_count ? d.question_count / d.listed_count : null,
+      '質問数', '質問率', '件数', false, '質問数・質問率(質問÷出品)']
+  ];
+  const cpYoy = isYoyMode()
+    ? buildYoyGeneric(cfg.rows, ['shipped_count', 'count', 'sr_count', 'refund_amount', 'sales_amount',
+        'listed_count', 'question_count'], rowFilter)
+    : null;
+  if (cpYoy && cpYoy.fyNums.length > 1) {
+    rateSpecs.forEach(([id, bar, rateFn, barLabel, lineLabel, leftLabel, money, title]) => {
+      renderChart(cfg.prefix + id, yoyGenericConfig(cpYoy, bar, rateFn, barLabel, lineLabel, leftLabel, money, title));
+    });
+  } else {
+    renderChart(cfg.prefix + 'SrRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+      (o, r) => { o.num += r.sr_count || 0; o.den += (r.shipped_count || r.count || 0); }, true, 'SR率の推移(%)'));
+    renderChart(cfg.prefix + 'RefundRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+      (o, r) => { o.num += r.refund_amount || 0; o.den += r.sales_amount || 0; }, true, '返金率の推移(金額ベース・%)'));
+    renderChart(cfg.prefix + 'ListedTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+      (o, r) => { o.num += r.listed_count || 0; o.den += 1; }, false, '出品数の推移(件)'));
+    renderChart(cfg.prefix + 'QuestionRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+      (o, r) => { o.num += r.question_count || 0; o.den += r.listed_count || 0; }, true, '質問率の推移(質問÷出品・%)'));
+  }
 
   // 詳細テーブル
   renderSimpleTableInto(cfg.prefix + 'Table', [
@@ -2808,6 +2889,15 @@ function renderProfitVarianceTrend() {
   const trend = buildDimTrendAlignedGeneric(PROFIT_VARIANCE_ROWS, null, PV_FIELDS, granularity, null);
   const labels = trend.periods.map(p => p.label);
   const pick = (p, f) => { const inner = trend.periodMap.get(p.key); const o = inner && inner.get('__ALL__'); return o ? (o[f] || 0) : 0; };
+  if (isYoyMode()) {
+    // 月次は決算月×期の昨対比較(粗利差異の合計を期別に並べる)
+    const ser = buildYoyGeneric(PROFIT_VARIANCE_ROWS, PV_FIELDS, null);
+    if (ser.fyNums.length > 1) {
+      renderChart('pvTrendChart', yoyGenericConfig(ser, 'variance_sum', null,
+        '粗利差異', '', '金額(¥)', true, '粗利差異'));
+      return;
+    }
+  }
   renderChart('pvTrendChart', pvTrendConfig(
     labels, trend.periods.map(p => pick(p, 'upside_amount')), trend.periods.map(p => pick(p, 'downside_amount')), trend.periods.map(p => pick(p, 'variance_sum'))
   ));
@@ -2984,6 +3074,20 @@ function cpdComboConfig(labels, barSpecs, lineSpecs) {
 }
 
 function renderCpdTrendSection() {
+  // 月次のときは決算月×期の昨対比較(選択カテゴリ合計の粗利差異)にする
+  if (isYoyMode() && typeof CATEGORY_PROFIT_DETAIL_ROWS !== 'undefined') {
+    const selCats = cpdCatMultiSel ? getMultiSelectValues(cpdCatMultiSel) : [];
+    const catSet = selCats.length ? new Set(selCats) : null;
+    const ser = buildYoyGeneric(CATEGORY_PROFIT_DETAIL_ROWS,
+      ['count', 'sales_amount', 'gross_profit', 'variance_amount'],
+      r => !catSet || catSet.has(r.category));
+    if (ser.fyNums.length > 1) {
+      renderChart('cpdTrendChart', yoyGenericConfig(ser, 'variance_amount',
+        d => d.sales_amount ? d.gross_profit / d.sales_amount : null,
+        '粗利差異', '粗利率', '金額(¥)', true, 'カテゴリ別 粗利差異・粗利率'));
+      return;
+    }
+  }
   if (!cpdCatMultiSel) return;
   const granularity = granSel.value;
   document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel();
@@ -3189,6 +3293,14 @@ function renderDeficitTrend() {
   const trend = buildDimTrendAlignedGeneric(DEFICIT_ROWS, null, DEFICIT_FIELDS, granularity, rowFilter);
   const labels = trend.periods.map(p => p.label);
   const pick = (p, f) => { const inner = trend.periodMap.get(p.key); const o = inner && inner.get('__ALL__'); return o ? (o[f] || 0) : 0; };
+  if (isYoyMode()) {
+    const ser = buildYoyGeneric(DEFICIT_ROWS, DEFICIT_FIELDS, rowFilter);
+    if (ser.fyNums.length > 1) {
+      renderChart('deficitTrendChart', yoyGenericConfig(ser, 'total_deficit', null,
+        '赤字額合計', '', '金額(¥)', true, '赤字額'));
+      return;
+    }
+  }
   renderChart('deficitTrendChart', dualAxisMoneyRightConfig(
     labels, trend.periods.map(p => pick(p, 'count')), trend.periods.map(p => pick(p, 'total_deficit')), '赤字商品数', '赤字額合計', '件数'
   ));
@@ -3718,6 +3830,66 @@ function yoyMonthlyConfig(series, barField, lineField, barLabel, lineLabel, left
     }
   };
 }
+
+// 任意の行配列(ROWS / CONDITION_ROWS / PROFIT_VARIANCE_ROWS など)を
+// 「決算月(7月〜6月) × 期」の形に集計する汎用版。月次のときだけ使う。
+function buildYoyGeneric(rowsArr, fields, rowFilter) {
+  const order = [];
+  for (let i = 0; i < 12; i++) order.push(((FY_START_M - 1 + i) % 12) + 1);
+  const byFy = new Map();
+  rowsArr.forEach(r => {
+    if (rowFilter && !rowFilter(r)) return;
+    const fi = fiscalInfo(r.year_month);
+    if (!byFy.has(fi.fyNum)) byFy.set(fi.fyNum, new Map());
+    const mm = parseInt(r.year_month.split('-')[1], 10);
+    const mp = byFy.get(fi.fyNum);
+    if (!mp.has(mm)) mp.set(mm, {});
+    sumFieldsInto(mp.get(mm), r, fields);
+  });
+  return {
+    labels: order.map(m => m + '月'), months: order,
+    fyNums: Array.from(byFy.keys()).sort((a, b) => a - b),
+    get: (fy, m) => (byFy.get(fy) || new Map()).get(m) || null
+  };
+}
+
+// 昨対の棒(+任意で率の折れ線)グラフ設定を作る
+function yoyGenericConfig(series, barField, rateFn, barLabel, lineLabel, leftLabel, isMoney, title) {
+  const barColors = ['#c9dbfa', '#8fb3f0', '#5b8def', '#12203f'];
+  const lineColors = ['#f0b7a4', '#e8916f', '#e0653a', '#a83a17'];
+  const datasets = [];
+  series.fyNums.forEach((fy, i) => datasets.push({
+    type: 'bar', label: ordinalSuffix(fy) + ' ' + barLabel, yAxisID: 'y', order: 2,
+    data: series.months.map(m => { const d = series.get(fy, m); return d ? (d[barField] || 0) : null; }),
+    backgroundColor: barColors[i % barColors.length]
+  }));
+  if (rateFn) {
+    series.fyNums.forEach((fy, i) => datasets.push({
+      type: 'line', label: ordinalSuffix(fy) + ' ' + lineLabel, yAxisID: 'y1', order: 1,
+      data: series.months.map(m => { const d = series.get(fy, m); const v = d ? rateFn(d) : null; return v == null ? null : v * 100; }),
+      borderColor: lineColors[i % lineColors.length], backgroundColor: lineColors[i % lineColors.length],
+      tension: 0.25, spanGaps: true
+    }));
+  }
+  const scales = {
+    y: { position: 'left', beginAtZero: true, title: { display: true, text: leftLabel },
+         ticks: { callback: v => isMoney ? (v / 1000) + 'k' : v } }
+  };
+  if (rateFn) scales.y1 = { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false },
+    title: { display: true, text: '率(%)' }, ticks: { callback: v => v + '%' } };
+  return {
+    type: 'bar', data: { labels: series.labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 9.5 } } },
+        title: { display: true, text: (title || barLabel) + '(期別の昨対比較)' } },
+      scales
+    }
+  };
+}
+
+// 月次かどうか(=昨対比較表示にするか)
+function isYoyMode() { return granSel.value === 'month'; }
 
 function renderComparisonTrendCharts(prefix, rowFilter) {
   const granularity = granSel.value;
