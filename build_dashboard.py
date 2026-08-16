@@ -867,11 +867,14 @@ html = r'''<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card insight-box" id="custDrillBox" style="display:none;">
-    <h3 id="custDrillTitle">顧客の詳細</h3>
-    <div class="insight-meta">一覧の「顧客」名をクリックすると、その顧客の購入内訳とSR内訳を表示します。</div>
+  <details class="card insight-box" id="custDrillBox" style="display:none;" open>
+    <summary style="cursor:pointer;font-weight:700;color:#1c2b4a;font-size:15px;list-style:revert;">
+      <span id="custDrillTitle">顧客の詳細</span>
+      <span class="badge">クリックで開閉</span>
+    </summary>
+    <div class="insight-meta" style="margin-top:8px;">一覧の「顧客」名をクリックすると、その顧客の購入内訳とSR内訳を表示します。</div>
     <div id="custDrillBody"></div>
-  </div>
+  </details>
 
   <div class="card table-section">
     <h3 id="customerTableTitle">顧客別 詳細</h3>
@@ -898,7 +901,9 @@ html = r'''<!DOCTYPE html>
   ※同じく軽量化のため、金額は行単位で円未満を四捨五入して保持しています。件数は完全一致、金額の合計値の誤差は最大でも0.0015%未満(数百万円に対し数十円)です。<br>
   ※率はいずれも「期間・絞り込み内で、分子と分母をそれぞれ合算した後に算出」しています(月次の率を単純平均していません)。<br>
   ※対象: 問合せ=CS_登録の種別「CS」(落札後の商品問合せ)、SR=CS_登録の種別「SR」、返金額=CS_返金の返金日基準、ヤフオク質問=質問_登録(出品中の質問対応、落札後の問合せとは別データ)。拠点はいずれもCSセンター・鳥取・北関東を除外集計。<br>
-  ※粗利=落札価格-買取価格/1.1-ヤフオク配送料/1.1。最終利益=粗利-返金額(-返品ありの場合はさらに返送料=ヤフオク配送料そのもの)。<br>
+  ※粗利=落札価格-買取価格/1.1-ヤフオク配送料/1.1。最終利益=粗利-返金額/1.1(-返品ありの場合はさらに返送料/1.1=ヤフオク配送料/1.1)。<br>
+  ※<b>金額はすべて税抜表示です</b>。元データが税込の項目(返金額・返送料・買取価格・販売価格・送料)は÷1.1して税抜に換算しています(落札価格は元から税抜)。<br>
+  ※返金率=返金額(税抜)÷売上金額(落札価格・税抜)で算出しています。<br>
   ※ジャンクは商品の「状態」欄が「ジャンク」の商品を対象に、出荷数・出品数に対する比率で算出。<br>
   ※SR分類の大項目は「分類」列(CS_登録【分類用】)のうち種別=SRの行のみを対象に、一番上に選択されている項目を採用(複数選択時)。種別=CSの行(商品質問・支払質問など)はSR分類には含めていません。<br>
   ※全体サマリー所見・カテゴリ別所見は、その時点までのデータをもとに週次で書き直されるコメントです(自動生成のため、必ず数値側と併せてご確認ください)。
@@ -3381,6 +3386,44 @@ function renderCustomerPage() {
 }
 
 // 顧客1人分の内訳を表示する(購入カテゴリ別のSR率 / SR大項目 / 返品有無 / コンディション・価格帯)
+// 手組みの表をクリックでソートできるようにする共通処理。
+// 各行に data-sort 属性(数値)を持たせ、ヘッダのクリックで昇順/降順を切り替える。
+function makeSortable(tableId, defaultCol) {
+  const tbl = document.getElementById(tableId);
+  if (!tbl) return;
+  const table = tbl.querySelector ? tbl.querySelector('table') : null;
+  if (!table) return;
+  const ths = table.querySelectorAll('thead th');
+  const tbody = table.querySelector('tbody');
+  if (!ths || !tbody) return;
+  const state = { col: defaultCol == null ? -1 : defaultCol, asc: false };
+  const apply = () => {
+    const rows = Array.from(tbody.querySelectorAll('tr')).filter(tr => !tr.dataset.total);
+    const totals = Array.from(tbody.querySelectorAll('tr')).filter(tr => tr.dataset.total);
+    rows.sort((a, b) => {
+      const av = a.children[state.col], bv = b.children[state.col];
+      const an = av ? parseFloat(av.dataset.sort != null ? av.dataset.sort : av.textContent.replace(/[^0-9.\-]/g, '')) : 0;
+      const bn = bv ? parseFloat(bv.dataset.sort != null ? bv.dataset.sort : bv.textContent.replace(/[^0-9.\-]/g, '')) : 0;
+      if (isNaN(an) && isNaN(bn)) return 0;
+      if (isNaN(an)) return 1;
+      if (isNaN(bn)) return -1;
+      return state.asc ? an - bn : bn - an;
+    });
+    rows.concat(totals).forEach(tr => tbody.appendChild(tr));
+    ths.forEach((th, i) => {
+      const base = th.dataset.label || th.textContent.replace(/[▲▼]/g, '').trim();
+      th.dataset.label = base;
+      th.textContent = base + (i === state.col ? (state.asc ? ' ▲' : ' ▼') : '');
+    });
+  };
+  ths.forEach((th, i) => {
+    th.style.cursor = 'pointer';
+    th.title = 'クリックで並び替え';
+    th.onclick = () => { if (state.col === i) state.asc = !state.asc; else { state.col = i; state.asc = false; } apply(); };
+  });
+  if (state.col >= 0) apply();
+}
+
 function renderCustomerDrill(label) {
   const box = document.getElementById('custDrillBox');
   const body = document.getElementById('custDrillBody');
@@ -3399,13 +3442,18 @@ function renderCustomerDrill(label) {
   const refunds = rows.filter(r => r.kind === 'refund');
   const sum = (arr, f) => arr.reduce((a, r) => a + (r[f] || 0), 0);
 
-  const tbl = (title, head, body2) =>
-    '<h4 style="margin:14px 0 6px;">' + title + '</h4>' +
+  const tblIds = [];
+  const tbl = (title, head, body2, tid) => {
+    if (tid) tblIds.push(tid);
+    return '<h4 style="margin:14px 0 6px;">' + title + '</h4>' +
+    '<div' + (tid ? ' id="' + tid + '"' : '') + '>' +
     '<table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr>' +
     head.map(h => '<th style="padding:5px 9px;border:1px solid #e3e5e8;background:#f5f6f8;text-align:' +
       (h.num ? 'right' : 'left') + ';">' + h.name + '</th>').join('') +
-    '</tr></thead><tbody>' + body2 + '</tbody></table>';
-  const td = (v, num) => '<td style="padding:5px 9px;border:1px solid #e3e5e8;text-align:' + (num ? 'right' : 'left') + ';">' + v + '</td>';
+    '</tr></thead><tbody>' + body2 + '</tbody></table></div>';
+  };
+  const td = (v, num, sortVal) => '<td' + (sortVal != null ? ' data-sort="' + sortVal + '"' : '') +
+    ' style="padding:5px 9px;border:1px solid #e3e5e8;text-align:' + (num ? 'right' : 'left') + ';">' + v + '</td>';
 
   // カテゴリ別: 購入数とSR件数を突き合わせてSR率を出す
   const byCat = new Map();
@@ -3431,23 +3479,39 @@ function renderCustomerDrill(label) {
   const totalTd = (v, num) => '<td style="padding:5px 9px;border:1px solid #e3e5e8;background:#eef1f5;font-weight:700;text-align:' +
     (num ? 'right' : 'left') + ';">' + v + '</td>';
   const catRows = catList
-    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.buy), 1) + td(fmtInt(o.sr), 1) +
-      td(o.buy ? fmtPct(o.sr / o.buy) : '-', 1) + td(fmtYen(o.sales), 1) + td(fmtYen(o.refund), 1) +
-      td(o.sales ? fmtPct(o.refund / o.sales) : '-', 1) + '</tr>').join('') +
-    '<tr>' + totalTd('合計') + totalTd(fmtInt(catTotal.buy), 1) + totalTd(fmtInt(catTotal.sr), 1) +
+    .map(([k, o]) => '<tr>' + td(k, 0, k) + td(fmtInt(o.buy), 1, o.buy) + td(fmtInt(o.sr), 1, o.sr) +
+      td(o.buy ? fmtPct(o.sr / o.buy) : '-', 1, o.buy ? o.sr / o.buy : -1) + td(fmtYen(o.sales), 1, o.sales) +
+      td(fmtYen(o.refund), 1, o.refund) +
+      td(o.sales ? fmtPct(o.refund / o.sales) : '-', 1, o.sales ? o.refund / o.sales : -1) + '</tr>').join('') +
+    '<tr data-total="1">' + totalTd('合計') + totalTd(fmtInt(catTotal.buy), 1) + totalTd(fmtInt(catTotal.sr), 1) +
       totalTd(catTotal.buy ? fmtPct(catTotal.sr / catTotal.buy) : '-', 1) + totalTd(fmtYen(catTotal.sales), 1) +
       totalTd(fmtYen(catTotal.refund), 1) + totalTd(catTotal.sales ? fmtPct(catTotal.refund / catTotal.sales) : '-', 1) + '</tr>';
 
   // SR大項目 × 返品有無
+  // SR大項目 + その中の小項目。総計に対する割合と、大項目内での割合の両方を出す。
   const byMajor = new Map();
   srs.forEach(r => {
     const key = r.major || '(未分類)';
-    const o = byMajor.get(key) || { n: 0 };
+    const o = byMajor.get(key) || { n: 0, minors: new Map() };
     o.n += r.count || 0;
+    const mk = r.minor || '(小項目なし)';
+    o.minors.set(mk, (o.minors.get(mk) || 0) + (r.count || 0));
     byMajor.set(key, o);
   });
+  const srTotalAll = Array.from(byMajor.values()).reduce((a, o) => a + o.n, 0);
   const majorRows = Array.from(byMajor.entries()).sort((a, b) => b[1].n - a[1].n)
-    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + '</tr>').join('');
+    .map(([k, o]) => {
+      const head = '<tr>' + td('<b>' + k + '</b>', 0, k) + td(fmtInt(o.n), 1, o.n) +
+        td(srTotalAll ? fmtPct(o.n / srTotalAll) : '-', 1, srTotalAll ? o.n / srTotalAll : -1) +
+        td('—', 1, -1) + '</tr>';
+      const kids = Array.from(o.minors.entries()).sort((a, b) => b[1] - a[1])
+        .map(([mk, mv]) => '<tr>' + td('　└ ' + mk, 0, k + '/' + mk) + td(fmtInt(mv), 1, mv) +
+          td(srTotalAll ? fmtPct(mv / srTotalAll) : '-', 1, srTotalAll ? mv / srTotalAll : -1) +
+          td(o.n ? fmtPct(mv / o.n) : '-', 1, o.n ? mv / o.n : -1) + '</tr>').join('');
+      return head + kids;
+    }).join('') +
+    '<tr data-total="1">' + totalTd('合計') + totalTd(fmtInt(srTotalAll), 1) +
+      totalTd('100.00%', 1) + totalTd('—', 1) + '</tr>';
 
   // 返品有無 × 返金額(CS_返金ベース)
   const byRet = new Map();
@@ -3460,9 +3524,10 @@ function renderCustomerDrill(label) {
   const retList = Array.from(byRet.entries()).sort((a, b) => b[1].amt - a[1].amt);
   const retTotalRow = retList.reduce((a, [, o]) => ({ n: a.n + o.n, amt: a.amt + o.amt }), { n: 0, amt: 0 });
   const retRows = retList
-    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + td(fmtYen(o.amt), 1) +
-      td(o.n ? fmtYen(o.amt / o.n) : '-', 1) + td(totalSales ? fmtPct(o.amt / totalSales) : '-', 1) + '</tr>').join('') +
-    '<tr>' + totalTd('合計') + totalTd(fmtInt(retTotalRow.n), 1) + totalTd(fmtYen(retTotalRow.amt), 1) +
+    .map(([k, o]) => '<tr>' + td(k, 0, k) + td(fmtInt(o.n), 1, o.n) + td(fmtYen(o.amt), 1, o.amt) +
+      td(o.n ? fmtYen(o.amt / o.n) : '-', 1, o.n ? o.amt / o.n : -1) +
+      td(totalSales ? fmtPct(o.amt / totalSales) : '-', 1, totalSales ? o.amt / totalSales : -1) + '</tr>').join('') +
+    '<tr data-total="1">' + totalTd('合計') + totalTd(fmtInt(retTotalRow.n), 1) + totalTd(fmtYen(retTotalRow.amt), 1) +
       totalTd(retTotalRow.n ? fmtYen(retTotalRow.amt / retTotalRow.n) : '-', 1) +
       totalTd(totalSales ? fmtPct(retTotalRow.amt / totalSales) : '-', 1) + '</tr>';
 
@@ -3499,14 +3564,17 @@ function renderCustomerDrill(label) {
     tbl('カテゴリ別のSR発生率・返金額率', [{ name: 'カテゴリ' }, { name: '購入数', num: 1 }, { name: 'SR件数', num: 1 },
       { name: 'SR率', num: 1 }, { name: '売上(円)', num: 1 }, { name: '返金額(円)', num: 1 },
       { name: '返金額率', num: 1 }], catRows) +
-    (majorRows ? tbl('SR大項目の内訳', [{ name: 'SR大項目' }, { name: '件数', num: 1 }], majorRows) : '') +
+    (majorRows ? tbl('SR大項目・小項目の内訳', [{ name: 'SR大項目 / 小項目' }, { name: '件数', num: 1 },
+      { name: '総計比', num: 1 }, { name: '大項目内の比率', num: 1 }], majorRows) : '') +
     (retRows ? tbl('返品有無・返金額', [{ name: '返品' }, { name: '返金件数', num: 1 },
       { name: '返金額(円)', num: 1 }, { name: '1件あたり', num: 1 }, { name: '返金額率(対売上)', num: 1 }], retRows) : '') +
     '<div class="mini-charts-grid" style="margin-top:6px;"><div>' +
     tbl('コンディション別の購入', [{ name: 'コンディション' }, { name: '購入数', num: 1 }, { name: '売上(円)', num: 1 }], condRows) +
     '</div><div>' +
-    tbl('価格帯別の購入', [{ name: '価格帯' }, { name: '購入数', num: 1 }, { name: '売上(円)', num: 1 }], bandRows) +
+    tbl('価格帯別の購入', [{ name: '価格帯' }, { name: '購入数', num: 1 }, { name: '売上(円)', num: 1 }], bandRows, 'custTblBand') +
     '</div></div>';
+  // 表のヘッダをクリックで並び替えできるようにする(既定: カテゴリ表はSR率降順、他は件数降順)
+  tblIds.forEach(id => makeSortable(id, id === 'custTblCat' ? 3 : (id === 'custTblMajor' ? -1 : 1)));
 }
 
 // 顧客名クリックの受け口(Grid.jsは再描画で要素が入れ替わるためイベント委譲で拾う)
@@ -3588,11 +3656,75 @@ function renderComparisonKpis(containerId, current, baseline) {
   document.getElementById(containerId).innerHTML = html;
 }
 
+// 月次のときは「決算月(7月〜6月)を横軸に、期ごとの系列を重ねる」昨対比較表示にする。
+// 例: 7月〜6月の12ヶ月を並べ、20期と21期の件数を棒、率を折れ線で比較できる。
+function buildYoyMonthlySeries(rowFilter) {
+  const FY_MONTH_ORDER = [];
+  for (let i = 0; i < 12; i++) FY_MONTH_ORDER.push(((FY_START_M - 1 + i) % 12) + 1);
+  const byFy = new Map();   // fyNum -> { monthNum -> agg }
+  ROWS.forEach(r => {
+    if (rowFilter && !rowFilter(r)) return;
+    const fi = fiscalInfo(r.year_month);
+    if (!byFy.has(fi.fyNum)) byFy.set(fi.fyNum, new Map());
+    const mm = parseInt(r.year_month.split('-')[1], 10);
+    const mp = byFy.get(fi.fyNum);
+    if (!mp.has(mm)) mp.set(mm, emptyAgg());
+    addInto(mp.get(mm), r);
+  });
+  const fyNums = Array.from(byFy.keys()).sort((a, b) => a - b);
+  return {
+    labels: FY_MONTH_ORDER.map(m => m + '月'),
+    months: FY_MONTH_ORDER,
+    fyNums,
+    get: (fy, m) => {
+      const a = (byFy.get(fy) || new Map()).get(m);
+      return a ? deriveRates(a) : null;
+    }
+  };
+}
+
+function yoyMonthlyConfig(series, barField, lineField, barLabel, lineLabel, leftLabel, isMoney) {
+  const barColors = ['#c9dbfa', '#8fb3f0', '#5b8def', '#12203f'];
+  const lineColors = ['#f0b7a4', '#e8916f', '#e0653a', '#a83a17'];
+  const datasets = [];
+  series.fyNums.forEach((fy, i) => {
+    datasets.push({
+      type: 'bar', label: ordinalSuffix(fy) + ' ' + barLabel, yAxisID: 'y',
+      data: series.months.map(m => { const d = series.get(fy, m); return d ? d[barField] : null; }),
+      backgroundColor: barColors[i % barColors.length], order: 2
+    });
+  });
+  series.fyNums.forEach((fy, i) => {
+    datasets.push({
+      type: 'line', label: ordinalSuffix(fy) + ' ' + lineLabel, yAxisID: 'y1',
+      data: series.months.map(m => { const d = series.get(fy, m); const v = d ? d[lineField] : null; return v == null ? null : v * 100; }),
+      borderColor: lineColors[i % lineColors.length], backgroundColor: lineColors[i % lineColors.length],
+      tension: 0.25, spanGaps: true, order: 1
+    });
+  });
+  return {
+    type: 'bar',
+    data: { labels: series.labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } },
+        title: { display: true, text: barLabel + '・' + lineLabel + '(期別の昨対比較)' } },
+      scales: {
+        y: { position: 'left', beginAtZero: true, title: { display: true, text: leftLabel },
+             ticks: { callback: v => isMoney ? (v / 1000) + 'k' : v } },
+        y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false },
+              title: { display: true, text: '率(%)' }, ticks: { callback: v => v + '%' } }
+      }
+    }
+  };
+}
+
 function renderComparisonTrendCharts(prefix, rowFilter) {
   const granularity = granSel.value;
   const trendSel = buildTrendAligned(granularity, rowFilter);
   const trendAll = buildTrendAligned(granularity, null);
   const labels = trendSel.map(t => t.label);
+  const yoySeries = (granularity === 'month') ? buildYoyMonthlySeries(rowFilter) : null;
 
   const specs = [
     { key: 'inquiry', bar: 'inquiry_count', line: 'inquiry_rate', barLabel: '問合せ件数', lineLabel: '問合せ率', baseLabel: '平均問合せ率', leftLabel: '件数', money: false },
@@ -3604,10 +3736,16 @@ function renderComparisonTrendCharts(prefix, rowFilter) {
   ];
 
   specs.forEach(s => {
-    renderChart(prefix + '_' + s.key, dualAxisWithBaselineConfig(
-      labels, trendSel.map(t => t[s.bar]), trendSel.map(t => t[s.line]), trendAll.map(t => t[s.line]),
-      s.barLabel, s.lineLabel, s.baseLabel, s.leftLabel, s.money
-    ));
+    if (yoySeries && yoySeries.fyNums.length > 1) {
+      // 月次では期をまたいだ同月比較(昨対)にする
+      renderChart(prefix + '_' + s.key, yoyMonthlyConfig(
+        yoySeries, s.bar, s.line, s.barLabel, s.lineLabel, s.leftLabel, s.money));
+    } else {
+      renderChart(prefix + '_' + s.key, dualAxisWithBaselineConfig(
+        labels, trendSel.map(t => t[s.bar]), trendSel.map(t => t[s.line]), trendAll.map(t => t[s.line]),
+        s.barLabel, s.lineLabel, s.baseLabel, s.leftLabel, s.money
+      ));
+    }
   });
 }
 

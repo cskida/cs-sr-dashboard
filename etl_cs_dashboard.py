@@ -780,6 +780,44 @@ def build_ship_date_master(weeks: list[WeekFiles]) -> dict[str, str]:
     return dict(zip(dedup["_norm_id"].tolist(), dedup["_ship_ymd"].tolist()))
 
 
+# コンディションランクは J/D/C/B/A/S の6段階(+ごく少数の新品(N))が正。
+# 商品_出品待など一部のファイルには「中古」「良好」「未使用」といった略記が混在するため、
+# 表記ゆれを正規のランク名に寄せる。判定できない値は「不明」に集約する。
+CONDITION_ALIASES = {
+    "ジャンク": "ジャンク(J)",
+    "程度不良": "程度不良(D)",
+    "中古": "一般中古(C)",
+    "一般中古": "一般中古(C)",
+    "良好": "程度良好(B)",
+    "程度良好": "程度良好(B)",
+    "美品": "美品(A)",
+    "未使用": "未使用品(S)",
+    "未使用品": "未使用品(S)",
+    "新品": "新品(N)",
+}
+CANONICAL_CONDITIONS = {
+    "ジャンク(J)", "程度不良(D)", "一般中古(C)", "程度良好(B)", "美品(A)", "未使用品(S)", "新品(N)",
+}
+
+
+def normalize_condition(value) -> str:
+    """状態の表記ゆれを正規のコンディションランク名に揃える。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "不明"
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return "不明"
+    if s in CANONICAL_CONDITIONS:
+        return s
+    if s in CONDITION_ALIASES:
+        return CONDITION_ALIASES[s]
+    # 「一般中古(C)」のように括弧付きで来た場合や前後に余計な文字がある場合に備える
+    for alias, canon in CONDITION_ALIASES.items():
+        if alias in s:
+            return canon
+    return "不明"
+
+
 def is_junk_status(status) -> bool:
     if status is None or (isinstance(status, float) and pd.isna(status)):
         return False
@@ -1060,7 +1098,7 @@ def aggregate_cause_from_refund(weeks: list[WeekFiles]) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
-    all_df["_amt"] = to_numeric(all_df["返金額"])
+    all_df["_amt"] = to_excl_tax(to_numeric(all_df["返金額"]))
     grouped = (
         all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category",
                         "cause_major", "cause_part"])
@@ -1148,17 +1186,19 @@ def aggregate_refund(
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
-    all_df["返金額_num"] = to_numeric(all_df["返金額"])
+    # 返金額は税込で記録されているため税抜に換算して保持する(表示・率とも税抜で統一)
+    all_df["返金額_num"] = to_excl_tax(to_numeric(all_df["返金額"]))
 
     # 返品欄が「あり」の場合、返送料(ヤフオク配送料そのもの。÷1.1しない)も最終利益から差し引く
     all_df["_norm_id"] = all_df["商品ID"].map(normalize_product_id)
     is_return = all_df["返品"].fillna("").astype(str).str.strip() == "あり"
 
     def _shipping_fee(norm_id):
+        # 返送料(ヤフオク配送料)も税込のため税抜に換算する
         if norm_id is None:
             return 0.0
         info = cost_master.get(norm_id)
-        return info[1] if info else 0.0
+        return to_excl_tax(info[1]) if info else 0.0
 
     all_df["返送料_num"] = 0.0
     all_df.loc[is_return, "返送料_num"] = all_df.loc[is_return, "_norm_id"].map(_shipping_fee)
@@ -1460,7 +1500,7 @@ def build_shukka_detail(
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
-    all_df["condition"] = all_df["状態"].fillna("不明").replace("", "不明")
+    all_df["condition"] = all_df["状態"].map(normalize_condition)
     all_df["落札価格_num"] = to_numeric(all_df["落札価格"])
     all_df["販売価格_num"] = to_numeric(all_df["販売価格"])
     all_df["買取価格_num"] = to_numeric(all_df["買取価格"])
@@ -1566,7 +1606,7 @@ def build_product_attr_master(weeks: list[WeekFiles]) -> dict[str, tuple[str, st
     sell = to_numeric(all_df["販売価格"])
     price = win.where(win > 0, sell)
     bands = price.map(lambda v: price_band_of(v) if v and v > 0 else ("不明", -1))
-    cond = all_df["状態"].fillna("不明").replace("", "不明").astype(str)
+    cond = all_df["状態"].map(normalize_condition)
     return dict(
         zip(
             all_df["_norm_id"].tolist(),
@@ -1583,7 +1623,7 @@ def _attach_attrs(df: pd.DataFrame, attr_master: dict[str, tuple[str, str, int]]
     df = df.copy()
     norm = df["商品ID"].map(normalize_product_id) if "商品ID" in df.columns else pd.Series([None] * len(df), index=df.index)
     attrs = norm.map(lambda nid: attr_master.get(nid, UNKNOWN_ATTR) if nid else UNKNOWN_ATTR)
-    df["condition"] = attrs.map(lambda t: t[0])
+    df["condition"] = attrs.map(lambda t: normalize_condition(t[0]))
     df["price_band"] = attrs.map(lambda t: t[1])
     df["price_band_sort"] = attrs.map(lambda t: t[2])
     return df
@@ -1677,7 +1717,7 @@ def aggregate_condition_price_metrics(
         df = df[pd.to_datetime(df["出品待"], errors="coerce").notna()].copy()
         df["location"] = df["拠点"].fillna("(不明)")
         df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
-        df["condition"] = df["状態"].fillna("不明").replace("", "不明")
+        df["condition"] = df["状態"].map(normalize_condition)
         price = to_numeric(df["落札価格"]).where(to_numeric(df["落札価格"]) > 0, to_numeric(df["販売価格"]))
         bands = price.map(lambda v: price_band_of(v) if v and v > 0 else ("不明", -1))
         df["price_band"] = bands.map(lambda t: t[0])
@@ -2532,7 +2572,7 @@ def build_customer_segment_rows(
         # 顧客詳細(⑧のドリルダウン)用: 購入をカテゴリ・コンディション・価格帯で分解する。
         # 商品名などの自由記述は公開ページに出さないため、ここでは集計値のみを持つ。
         attrs = merged["_norm_id"].map(lambda nid: attr_master.get(nid, UNKNOWN_ATTR) if nid else UNKNOWN_ATTR)
-        merged["_condition"] = attrs.map(lambda t: t[0])
+        merged["_condition"] = attrs.map(lambda t: normalize_condition(t[0]))
         merged["_price_band"] = attrs.map(lambda t: t[1])
         merged["_band_sort"] = attrs.map(lambda t: t[2])
         merged["_category"] = merged["_norm_id"].map(category_master).fillna("不明")
@@ -2569,11 +2609,16 @@ def build_customer_segment_rows(
             # 顧客詳細用: SRをカテゴリ×大項目×返品有無で分解する(自由記述は含めない)
             md = matched.copy()
             md["_category"] = md["カテゴリ"].fillna("不明").replace("", "不明")
-            md["_major"] = md["分類"].map(extract_major_category).fillna("(未分類)") if "分類" in md.columns else "(未分類)"
+            if "分類" in md.columns:
+                md["_major"] = md["分類"].map(extract_major_category).fillna("(未分類)")
+                md["_minor"] = md["分類"].map(extract_minor_category).fillna("(小項目なし)")
+            else:
+                md["_major"] = "(未分類)"
+                md["_minor"] = "(小項目なし)"
             md["_returned"] = md["返品"].fillna("").astype(str).str.strip().map(lambda v: "返品あり" if v == "あり" else "返品なし")
             md["_refund"] = to_numeric(md["返金額"]) if "返金額" in md.columns else 0
             sr_detail = (
-                md.groupby(["_cluster", "_category", "_major", "_returned"])
+                md.groupby(["_cluster", "_category", "_major", "_minor", "_returned"])
                 .agg(count=("受注ID", "size"), refund_amount=("_refund", "sum"))
                 .reset_index()
             )
@@ -2594,7 +2639,8 @@ def build_customer_segment_rows(
         hen = hen[hen["_cluster"].notna()].copy()
         meta["refund_rows_matched"] = int(len(hen))
         if not hen.empty:
-            hen["返金額_num"] = to_numeric(hen["返金額"])
+            # 返金額・返送料はいずれも税込のため税抜に換算する
+            hen["返金額_num"] = to_excl_tax(to_numeric(hen["返金額"]))
             hen["_norm_id"] = hen["商品ID"].map(normalize_product_id)
             is_return = hen["返品"].fillna("").astype(str).str.strip() == "あり"
 
@@ -2602,7 +2648,7 @@ def build_customer_segment_rows(
                 if norm_id is None:
                     return 0.0
                 info = cost_master.get(norm_id)
-                return info[1] if info else 0.0
+                return to_excl_tax(info[1]) if info else 0.0
 
             hen["返送料_num"] = 0.0
             hen.loc[is_return, "返送料_num"] = hen.loc[is_return, "_norm_id"].map(_shipping_fee)
@@ -2712,7 +2758,7 @@ def build_customer_segment_rows(
     # 種類ごとにキーが違うと後ろの種類の列が失われてしまう)
     DETAIL_FIELDS = {
         "label": "", "kind": "", "category": "", "condition": "", "price_band": "",
-        "price_band_sort": 0, "major": "", "returned": "",
+        "price_band_sort": 0, "major": "", "minor": "", "returned": "",
         "count": 0, "sales_amount": 0.0, "gross_profit": 0.0, "refund_amount": 0.0,
     }
 
@@ -2736,7 +2782,7 @@ def build_customer_segment_rows(
         for _, r in sr_shown.iterrows():
             detail_rows.append(_detail(
                 label=label_of_cluster.get(r["_cluster"], ""), kind="sr",
-                category=r["_category"], major=r["_major"], returned=r["_returned"],
+                category=r["_category"], major=r["_major"], minor=r["_minor"], returned=r["_returned"],
                 count=int(r["count"]), refund_amount=round(float(r["refund_amount"]), 2)))
     if not refund_detail.empty:
         rf_shown = refund_detail[refund_detail["_cluster"].isin(shown_clusters)]
