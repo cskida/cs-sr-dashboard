@@ -932,6 +932,49 @@ def extract_major_category(bunrui_cell) -> Optional[str]:
     return m.group(2).strip()
 
 
+def extract_minor_category(bunrui_cell) -> Optional[str]:
+    """「分類」列から小項目(3階層目)を抽出する。
+
+    例: "SR > 商品説明 > 商品説明不足" -> "商品説明不足"
+    大項目と同じく、複数選択(改行区切り)のセルは最初の1つを採用する。
+    """
+    if bunrui_cell is None or (isinstance(bunrui_cell, float) and pd.isna(bunrui_cell)):
+        return None
+    s = str(bunrui_cell).strip()
+    if not s or s.lower() == "nan":
+        return None
+    m = BUNRUI_RE.match(s.splitlines()[0].strip())
+    if not m:
+        return None
+    minor = m.group(3).strip()
+    return minor or None
+
+
+# CS_返金の「管理用メモ」に運用で記載される原因情報を取り出すための正規表現。
+# 実データの書式:
+#   【原因元】\n本体\n【原因分類】\n動作不備\n【原因詳細】\nハードディスクの不具合
+# 空行が入る場合もあるため、タグの直後の最初の非空行を値として拾う。
+MEMO_TAG_RE = {
+    "cause_part": re.compile(r"【原因元】\s*\n\s*([^\n【]+)"),
+    "cause_major": re.compile(r"【原因分類】\s*\n\s*([^\n【]+)"),
+}
+
+
+def parse_memo_cause(memo) -> tuple[Optional[str], Optional[str]]:
+    """管理用メモから (原因分類, 原因元) を取り出す。無ければ (None, None)。"""
+    if memo is None or (isinstance(memo, float) and pd.isna(memo)):
+        return (None, None)
+    text = str(memo)
+    if "【原因" not in text:
+        return (None, None)
+    out = {}
+    for key, rx in MEMO_TAG_RE.items():
+        m = rx.search(text)
+        v = m.group(1).strip() if m else None
+        out[key] = v or None
+    return (out.get("cause_major"), out.get("cause_part"))
+
+
 def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFrame:
     """「分類」列(CS_登録【分類用】)のうち種別=SRの行のみを対象に、大項目(動作/付属品/
     商品説明/欠品/配送/返金など)の内訳を week×拠点×カテゴリ×大項目 で集計する。
@@ -972,12 +1015,57 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
     all_df["major"] = all_df["分類"].map(extract_major_category)
+    all_df["minor"] = all_df["分類"].map(extract_minor_category).fillna("(小項目なし)")
     all_df = all_df[all_df["major"].notna()].copy()
 
     grouped = (
-        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category", "major"])
+        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category", "major", "minor"])
         .size()
         .reset_index(name="count")
+        .rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
+    )
+    return grouped
+
+
+def aggregate_cause_from_refund(weeks: list[WeekFiles]) -> pd.DataFrame:
+    """CS_返金の「管理用メモ」に記載された原因(原因分類・原因元)を集計する。
+
+    運用変更(2026年8月〜)により、返金確定時に管理用メモの先頭へ
+    【原因元】【原因分類】【原因詳細】を記載する運用になったため、こちらを主データとする。
+    返金額・返送料も同時に集計し、「どの不備がいくらの損失になっているか」を金額で見られるようにする。
+    メモに記載が無い週・行は対象外(この関数は0行を返し、呼び出し側が分類用ファイルで補う)。
+    """
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "管理用メモ" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "返金日"))
+    cols = ["week_start", "week_end", "year_month", "location", "category",
+            "cause_major", "cause_part", "count", "refund_amount"]
+    if not frames:
+        return pd.DataFrame(columns=cols)
+
+    all_df = concat_and_dedup(frames, id_col="CS ID")
+    all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+    all_df = all_df[pd.to_datetime(all_df["返金日"], errors="coerce").notna()].copy()
+    parsed = all_df["管理用メモ"].map(parse_memo_cause)
+    all_df["cause_major"] = parsed.map(lambda t: t[0])
+    all_df["cause_part"] = parsed.map(lambda t: t[1]).fillna("(不明)")
+    all_df = all_df[all_df["cause_major"].notna()].copy()
+    if all_df.empty:
+        return pd.DataFrame(columns=cols)
+    all_df["location"] = all_df["拠点"].fillna("(不明)")
+    all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
+    all_df["_amt"] = to_numeric(all_df["返金額"])
+    grouped = (
+        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category",
+                        "cause_major", "cause_part"])
+        .agg(count=("_amt", "size"), refund_amount=("_amt", "sum"))
+        .reset_index()
         .rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
     )
     return grouped
@@ -1808,7 +1896,7 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
     df = aggregate_sr_major(weeks, stats)
     if df.empty:
         return []
-    df = df.sort_values(["week_start", "location", "category", "major"])
+    df = df.sort_values(["week_start", "location", "category", "major", "minor"])
     return [
         {
             "week_start": r["week_start"],
@@ -1817,6 +1905,7 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
             "location": r["location"],
             "category": r["category"],
             "major": r["major"],
+            "minor": r.get("minor", "(小項目なし)"),
             "count": int(r["count"]),
         }
         for _, r in df.iterrows()
@@ -1824,23 +1913,40 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
 
 
 def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
-    df = aggregate_cause(weeks, stats)
-    if df.empty:
-        return []
-    df = df.sort_values(["week_start", "location", "category", "cause_major", "cause_part"])
-    return [
-        {
-            "week_start": r["week_start"],
-            "week_end": r["week_end"],
-            "year_month": r["year_month"],
-            "location": r["location"],
-            "category": r["category"],
-            "cause_major": r["cause_major"],
-            "cause_part": r["cause_part"],
-            "count": int(r["count"]),
-        }
-        for _, r in df.iterrows()
-    ]
+    """原因(原因分類×原因元)の行を作る。
+
+    データ源は2つあり、週(基準日)ごとに次の優先順で採用する:
+      1. CS_返金の「管理用メモ」に記載された原因(運用変更後。返金額も分かる)
+      2. CS_登録【分類用】の「原因分類」「原因元」列(運用変更前を後から分類したもの)
+    同じ週で二重計上しないよう、1が1件でもある週は1のみを使う。
+    どちらの出所かは source 列で区別できるようにしておく。
+    """
+    memo_df = aggregate_cause_from_refund(weeks)
+    file_df = aggregate_cause(weeks, stats)
+    memo_weeks = set(memo_df["week_start"]) if not memo_df.empty else set()
+    if not file_df.empty and memo_weeks:
+        file_df = file_df[~file_df["week_start"].isin(memo_weeks)].copy()
+
+    out = []
+    for df, source in ((memo_df, "返金メモ"), (file_df, "分類用ファイル")):
+        if df.empty:
+            continue
+        df = df.sort_values(["week_start", "location", "category", "cause_major", "cause_part"])
+        for _, r in df.iterrows():
+            out.append({
+                "week_start": r["week_start"],
+                "week_end": r["week_end"],
+                "year_month": r["year_month"],
+                "location": r["location"],
+                "category": r["category"],
+                "cause_major": r["cause_major"],
+                "cause_part": r["cause_part"],
+                "count": int(r["count"]),
+                "refund_amount": float(r["refund_amount"]) if "refund_amount" in df.columns else 0.0,
+                "source": source,
+            })
+    out.sort(key=lambda r: (r["week_start"], r["location"], r["category"], r["cause_major"]))
+    return out
 
 
 EXTRA_METRIC_COLS = [

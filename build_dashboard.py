@@ -345,6 +345,24 @@ html = r'''<!DOCTYPE html>
     <div id="detailTableLocation" class="detail-table"></div>
   </div>
 
+
+  <hr style="margin:26px 0 18px; border:none; border-top:2px solid #e3e5e8;">
+  <p class="drill-title">SR改善分析 <span id="ovImpPeriod" class="badge"></span></p>
+  <div class="card insight-box"><div class="insight-text" id="ovImpInsight"></div></div>
+
+  <h2>小項目別の件数・損失額</h2>
+  <div class="card major-chart-card"><canvas id="ovMinorChart"></canvas></div>
+  <div class="card table-section"><div id="ovMinorTable" class="detail-table"></div></div>
+
+  <h2>小項目別の推移</h2>
+  <div class="card major-chart-card"><canvas id="ovMinorTrend"></canvas></div>
+
+  <h2>原因分類 × 原因元</h2>
+  <div class="card table-section"><div id="ovCauseCross"></div></div>
+
+  <h2>拠点 × 小項目 ヒートマップ</h2>
+  <div class="card table-section"><div id="ovMinorHeat"></div></div>
+
 </div>
 
 <!-- ============ ② 拠点別ページ(1拠点ドリルダウン) ============ -->
@@ -513,6 +531,24 @@ html = r'''<!DOCTYPE html>
 
   </div>
 
+
+  <hr style="margin:26px 0 18px; border:none; border-top:2px solid #e3e5e8;">
+  <p class="drill-title">SR改善分析 <span id="dtImpPeriod" class="badge"></span></p>
+  <div class="card insight-box"><div class="insight-text" id="dtImpInsight"></div></div>
+
+  <h2>小項目別の件数・損失額</h2>
+  <div class="card major-chart-card"><canvas id="dtMinorChart"></canvas></div>
+  <div class="card table-section"><div id="dtMinorTable" class="detail-table"></div></div>
+
+  <h2>小項目別の推移</h2>
+  <div class="card major-chart-card"><canvas id="dtMinorTrend"></canvas></div>
+
+  <h2>原因分類 × 原因元</h2>
+  <div class="card table-section"><div id="dtCauseCross"></div></div>
+
+  <h2>拠点 × 小項目 ヒートマップ</h2>
+  <div class="card table-section"><div id="dtMinorHeat"></div></div>
+
 </div>
 
 <!-- ============ ③ 全カテゴリページ ============ -->
@@ -538,6 +574,24 @@ html = r'''<!DOCTYPE html>
     <h3 id="tableTitleCategory">詳細テーブル(カテゴリ別)</h3>
     <div id="detailTableCategory" class="detail-table"></div>
   </div>
+
+
+  <hr style="margin:26px 0 18px; border:none; border-top:2px solid #e3e5e8;">
+  <p class="drill-title">SR改善分析 <span id="acImpPeriod" class="badge"></span></p>
+  <div class="card insight-box"><div class="insight-text" id="acImpInsight"></div></div>
+
+  <h2>小項目別の件数・損失額</h2>
+  <div class="card major-chart-card"><canvas id="acMinorChart"></canvas></div>
+  <div class="card table-section"><div id="acMinorTable" class="detail-table"></div></div>
+
+  <h2>小項目別の推移</h2>
+  <div class="card major-chart-card"><canvas id="acMinorTrend"></canvas></div>
+
+  <h2>原因分類 × 原因元</h2>
+  <div class="card table-section"><div id="acCauseCross"></div></div>
+
+  <h2>拠点 × 小項目 ヒートマップ</h2>
+  <div class="card table-section"><div id="acMinorHeat"></div></div>
 
 </div>
 
@@ -1247,6 +1301,11 @@ function renderDetailPage() {
   if (locBlock) locBlock.style.display = specificLoc ? '' : 'none';
   if (specificLoc) renderLocationPage();
   renderCategoryPage();
+  // 選択中の拠点×カテゴリに絞ったSR改善分析
+  const cats = new Set(getMultiSelectValues(locCatMultiSel));
+  const useCat = cats.size > 0 && cats.size < categories.length;
+  renderImprovementSection('dt', r =>
+    (!specificLoc || r.location === locSel.value) && (!useCat || cats.has(r.category)));
 }
 
 // ④コンディション / ⑤価格帯ページ用のカテゴリセレクタ(未選択=全カテゴリ)
@@ -1994,6 +2053,199 @@ function buildSrMajorByDim(dim, granularity, periodKey, rowFilter) {
     map.get(k)[r.major] = (map.get(k)[r.major] || 0) + r.count;
   });
   return { labels: Array.from(map.keys()), majors: Array.from(majorsSet), map };
+}
+
+// ============================================================================
+// SR改善分析(①全拠点 / ②全カテゴリ / ③拠点×カテゴリ に共通で表示)
+//   ・小項目別の件数と損失額(返金額+返送料)
+//   ・小項目別の推移
+//   ・原因分類 × 原因元 のクロス集計(どの工程を直すべきかの特定)
+//   ・拠点 × 小項目 のヒートマップ(拠点ごとの指導ポイント)
+// 原因データは「CS_返金の管理用メモ」を優先し、無い週は「CS_登録【分類用】」で補完している。
+// ============================================================================
+function impCell(v, opt) {
+  const o = opt || {};
+  return '<td style="padding:5px 9px;border:1px solid #e3e5e8;text-align:' + (o.num ? 'right' : 'left') +
+    (o.bg ? ';background:' + o.bg : '') + (o.bold ? ';font-weight:700' : '') + ';">' + v + '</td>';
+}
+
+function impTable(head, bodyHtml) {
+  return '<table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr>' +
+    head.map(h => '<th style="padding:5px 9px;border:1px solid #e3e5e8;background:#f5f6f8;text-align:' +
+      (h.num ? 'right' : 'left') + ';">' + h.name + '</th>').join('') +
+    '</tr></thead><tbody>' + bodyHtml + '</tbody></table>';
+}
+
+function renderImprovementSection(prefix, rowFilter) {
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const inPeriod = r => (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  const flt = r => inPeriod(r) && (!rowFilter || rowFilter(r));
+  const el = id => document.getElementById(prefix + id);
+  const pl = el('ImpPeriod'); if (pl) pl.textContent = currentPeriodLabel();
+
+  // --- 小項目別: 件数と損失額(損失額は原因データの返金額を小項目に配分せず、
+  //     同じ期間・同じ絞り込みの返金額を大項目経由で按分せずに「返金メモの原因別金額」を別表で示す) ---
+  const srRows = SR_MAJOR_ROWS.filter(flt);
+  const byMinor = new Map();
+  srRows.forEach(r => {
+    const k = r.major + ' > ' + (r.minor || '(小項目なし)');
+    byMinor.set(k, (byMinor.get(k) || 0) + (r.count || 0));
+  });
+  const minorList = Array.from(byMinor.entries()).sort((a, b) => b[1] - a[1]);
+  const srTotal = minorList.reduce((a, x) => a + x[1], 0);
+
+  // 原因データ(返金メモ優先)から損失額を集計
+  const causeRows = CAUSE_ROWS.filter(flt);
+  const lossByCause = new Map();
+  causeRows.forEach(r => {
+    const k = r.cause_major || '(不明)';
+    const o = lossByCause.get(k) || { n: 0, amt: 0 };
+    o.n += r.count || 0; o.amt += r.refund_amount || 0;
+    lossByCause.set(k, o);
+  });
+
+  renderChart(prefix + 'MinorChart', {
+    type: 'bar',
+    data: {
+      labels: minorList.slice(0, 15).map(x => x[0]),
+      datasets: [{ label: 'SR件数', data: minorList.slice(0, 15).map(x => x[1]), backgroundColor: '#5b8def' }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, title: { display: true, text: '小項目別のSR件数(上位15)' } },
+      scales: { x: { beginAtZero: true } }
+    }
+  });
+
+  const minorBody = minorList.slice(0, 20).map(([k, v]) =>
+    '<tr>' + impCell(k) + impCell(fmtInt(v), { num: 1 }) +
+    impCell(srTotal ? fmtPct(v / srTotal) : '-', { num: 1 }) + '</tr>').join('') +
+    '<tr>' + impCell('合計', { bg: '#eef1f5', bold: 1 }) + impCell(fmtInt(srTotal), { num: 1, bg: '#eef1f5', bold: 1 }) +
+    impCell('100.00%', { num: 1, bg: '#eef1f5', bold: 1 }) + '</tr>';
+  const mt = el('MinorTable');
+  if (mt) mt.innerHTML = impTable([{ name: '小項目(大項目 > 小項目)' }, { name: 'SR件数', num: 1 }, { name: '構成比', num: 1 }], minorBody);
+
+  // --- 小項目別の推移(上位6) ---
+  const periods = availablePeriods(granularity);
+  const topMinors = minorList.slice(0, 6).map(x => x[0]);
+  const acc = new Map();
+  SR_MAJOR_ROWS.filter(r => (!rowFilter || rowFilter(r))).forEach(r => {
+    const pk = periodKeyFor(r, granularity);
+    if (pk.key == null) return;
+    const k = r.major + ' > ' + (r.minor || '(小項目なし)');
+    if (!topMinors.includes(k)) return;
+    if (!acc.has(pk.label)) acc.set(pk.label, {});
+    const o = acc.get(pk.label);
+    o[k] = (o[k] || 0) + (r.count || 0);
+  });
+  renderChart(prefix + 'MinorTrend', {
+    type: 'line',
+    data: {
+      labels: periods.map(p => p.label),
+      datasets: topMinors.map((k, i) => ({
+        label: k, data: periods.map(p => (acc.get(p.label) || {})[k] || 0),
+        borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], tension: 0.25
+      }))
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { title: { display: true, text: '小項目別SR件数の推移(上位6)' }, legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+      scales: { y: { beginAtZero: true } }
+    }
+  });
+
+  // --- 原因分類 × 原因元 のクロス集計 ---
+  const parts = Array.from(new Set(causeRows.map(r => r.cause_part || '(不明)')));
+  const majors = Array.from(new Set(causeRows.map(r => r.cause_major || '(不明)')));
+  const cross = new Map();
+  causeRows.forEach(r => {
+    const k = (r.cause_major || '(不明)') + '|' + (r.cause_part || '(不明)');
+    const o = cross.get(k) || { n: 0, amt: 0 };
+    o.n += r.count || 0; o.amt += r.refund_amount || 0;
+    cross.set(k, o);
+  });
+  const partTotals = parts.map(p => ({ p, n: majors.reduce((a, mj) => a + ((cross.get(mj + '|' + p) || {}).n || 0), 0) }))
+    .sort((a, b) => b.n - a.n).slice(0, 8);
+  const majorTotals = majors.map(mj => ({ mj, n: parts.reduce((a, p) => a + ((cross.get(mj + '|' + p) || {}).n || 0), 0),
+    amt: parts.reduce((a, p) => a + ((cross.get(mj + '|' + p) || {}).amt || 0), 0) }))
+    .sort((a, b) => b.n - a.n);
+  const maxCross = Math.max(1, ...majorTotals.flatMap(x => partTotals.map(pt => (cross.get(x.mj + '|' + pt.p) || {}).n || 0)));
+  const crossBody = majorTotals.map(x =>
+    '<tr>' + impCell(x.mj) +
+    partTotals.map(pt => {
+      const n = (cross.get(x.mj + '|' + pt.p) || {}).n || 0;
+      const bg = n ? 'rgba(224,101,58,' + (0.10 + 0.55 * (n / maxCross)).toFixed(2) + ')' : '';
+      return impCell(n ? fmtInt(n) : '-', { num: 1, bg });
+    }).join('') +
+    impCell(fmtInt(x.n), { num: 1, bold: 1 }) + impCell(fmtYen(x.amt), { num: 1, bold: 1 }) + '</tr>').join('');
+  const cc = el('CauseCross');
+  if (cc) {
+    cc.innerHTML = causeRows.length
+      ? impTable([{ name: '原因分類 \\ 原因元' }].concat(partTotals.map(pt => ({ name: pt.p, num: 1 })))
+          .concat([{ name: '合計件数', num: 1 }, { name: '返金額', num: 1 }]), crossBody) +
+        '<p class="note">返金額は「CS_返金の管理用メモに原因が記載された行」の合計です(運用変更前の期間は分類用ファイルの原因を使うため0円表示になります)。</p>'
+      : '<p class="note">この期間は原因データがありません。</p>';
+  }
+
+  // --- 拠点 × 小項目 ヒートマップ ---
+  const locs = Array.from(new Set(srRows.map(r => r.location))).filter(Boolean);
+  const heatMinors = minorList.slice(0, 8).map(x => x[0]);
+  const heat = new Map();
+  srRows.forEach(r => {
+    const k = r.location + '|' + r.major + ' > ' + (r.minor || '(小項目なし)');
+    heat.set(k, (heat.get(k) || 0) + (r.count || 0));
+  });
+  const locTotals = locs.map(l => ({ l, n: heatMinors.reduce((a, k) => a + (heat.get(l + '|' + k) || 0), 0) }))
+    .sort((a, b) => b.n - a.n);
+  const maxHeat = Math.max(1, ...locTotals.flatMap(x => heatMinors.map(k => heat.get(x.l + '|' + k) || 0)));
+  const heatBody = locTotals.map(x =>
+    '<tr>' + impCell(x.l) +
+    heatMinors.map(k => {
+      const n = heat.get(x.l + '|' + k) || 0;
+      const bg = n ? 'rgba(91,141,239,' + (0.10 + 0.60 * (n / maxHeat)).toFixed(2) + ')' : '';
+      return impCell(n ? fmtInt(n) : '-', { num: 1, bg });
+    }).join('') + impCell(fmtInt(x.n), { num: 1, bold: 1 }) + '</tr>').join('');
+  const hm = el('MinorHeat');
+  if (hm) {
+    hm.innerHTML = heatMinors.length
+      ? impTable([{ name: '拠点 \\ 小項目' }].concat(heatMinors.map(k => ({ name: k.split(' > ')[1] || k, num: 1 })))
+          .concat([{ name: '合計', num: 1 }]), heatBody)
+      : '<p class="note">この期間はSRの小項目データがありません。</p>';
+  }
+
+  // --- 所見(自動生成) ---
+  const ins = el('ImpInsight');
+  if (ins) {
+    const lossListAll = Array.from(lossByCause.entries()).sort((a, b) => b[1].amt - a[1].amt);
+    if (!srTotal && !lossListAll.length) { ins.textContent = 'この期間のSRデータがありません。'; }
+    else if (!srTotal) {
+      // SR分類は未入力でも、返金メモの原因は入っていることがある(運用の切り替え期)
+      const t = lossListAll[0];
+      ins.textContent = 'この期間はSRの分類データがありませんが、返金メモの原因記載は' +
+        fmtInt(lossListAll.reduce((a, x) => a + x[1].n, 0)) + '件あります。金額が最大の原因は「' + t[0] + '」で' +
+        fmtYen(t[1].amt) + '(' + fmtInt(t[1].n) + '件)です。';
+    }
+    else {
+      const lines = [];
+      const top = minorList[0];
+      lines.push('SR' + fmtInt(srTotal) + '件のうち最も多いのは「' + top[0] + '」で' + fmtInt(top[1]) + '件(' +
+        fmtPct(top[1] / srTotal) + ')。上位3項目で' +
+        fmtPct(minorList.slice(0, 3).reduce((a, x) => a + x[1], 0) / srTotal) + 'を占めます。');
+      const lossList = Array.from(lossByCause.entries()).sort((a, b) => b[1].amt - a[1].amt);
+      if (lossList.length && lossList[0][1].amt > 0) {
+        lines.push('金額で見ると「' + lossList[0][0] + '」の返金が最大で' + fmtYen(lossList[0][1].amt) +
+          '(' + fmtInt(lossList[0][1].n) + '件、1件あたり' + fmtYen(lossList[0][1].amt / lossList[0][1].n) + ')。');
+      }
+      if (locTotals.length > 1) {
+        const worst = locTotals[0];
+        const wk = heatMinors.map(k => ({ k, n: heat.get(worst.l + '|' + k) || 0 })).sort((a, b) => b.n - a.n)[0];
+        if (wk && wk.n) lines.push('拠点別では「' + worst.l + '」が' + fmtInt(worst.n) + '件と最多で、内訳は「' +
+          (wk.k.split(' > ')[1] || wk.k) + '」' + fmtInt(wk.n) + '件が中心です。');
+      }
+      lines.push('改善の着手順は、件数の多い小項目(検品・記載の標準化)と、1件あたり返金額の大きい原因(高額品の検品強化)の2軸で判断してください。');
+      ins.textContent = lines.join('\n');
+    }
+  }
 }
 
 function renderOverallSrMajorChart() {
@@ -3296,6 +3548,7 @@ function renderOverallPage() {
   renderLocationSrMajorChart();
   // C項目: ジャンク出品比率ヒートマップは⑤拠点×カテゴリページ(renderLocCatPage)へ移動した
   renderDetailTable('location');
+  renderImprovementSection('ov', null);
 }
 
 // ---------- 生成: ③全カテゴリページ ----------
@@ -3306,6 +3559,7 @@ function renderAllCategoryPage() {
   renderCategoryBreakdown();
   renderCategorySrMajorChart();
   renderDetailTable('category');
+  renderImprovementSection('ac', null);
 }
 
 // ---------- 比較KPIカード(②/④で使用) ----------
