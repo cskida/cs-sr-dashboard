@@ -800,6 +800,18 @@ html = r'''<!DOCTYPE html>
        カテゴリはこのページ専用の複数選択セレクタを使う。④・⑤ページと違い「未選択=全カテゴリ」。 -->
   <p class="drill-title" id="deficitDrillTitle">全拠点 × 全カテゴリ</p>
 
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>損益の見方</label>
+      <select id="deficitMode">
+        <option value="acc">会計上の粗利(落札価格-買取価格/1.1)</option>
+        <option value="fin" selected>最終利益(粗利-送料/1.1-返送料/1.1)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="kpi-grid" id="deficitModeKpi"></div>
+
   <div class="card insight-box" id="deficitInsightBox">
     <h3>赤字(原価割れ)の所見(自動生成)</h3>
     <div class="insight-meta" id="deficitInsightMeta"></div>
@@ -833,7 +845,26 @@ html = r'''<!DOCTYPE html>
     <div id="detailTableDeficitProc" class="detail-table"></div>
   </div>
 
-  <p class="note" id="deficitNote">赤字(原価割れ)の定義: 実質粗利(落札価格-買取価格/1.1-発送送料) が0未満の商品。加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の返送料(ヤフオク配送料)も赤字額に加算しています(total_deficit=正の値ほど赤字が大きいことを表します)。対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。発送送料は「ヤフオク配送料」列を基準に、数値ならそのまま採用、"らくらく家財便"の場合は受注_通常_出荷の実際の送料を突合して採用、"直引"の場合は0円としています。<br>
+  <div class="card insight-box" style="background:#fff8ec;border-color:#f0dfb8;">
+    <h3 style="color:#7a5b1e;">この表に入っていない「人の手間」のコスト</h3>
+    <div class="insight-text" style="color:#4a3c1e;">
+金額だけを見ると赤字でなくても、SRが起きた商品には作業時間という見えないコストがかかっています。1点あたりの目安は次のとおりです。
+
+　・商品化〜出荷まで： 約30分（SRの有無にかかわらず必ず発生）
+　・SR発生後のCS対応： 約30分（お客様対応・原因確認）
+　・返送品の再検品〜返金対応〜再出品〜再出荷： 約30分
+
+つまりSRが1件起きて返品・再販まで至ると、通常の30分に加えて約60分＝<b>通常の3倍の工数</b>がかかります。金額上は「再販できたので黒字」に見える商品でも、人件費を加味すると実質的に利益が消えている可能性があります。赤字件数と併せて、SR発生件数そのものを減らすことが利益改善に直結します。
+
+<span style="font-size:11.5px;color:#7a5b1e;">※この工数コストは金額集計には含めていません（時給単価が拠点・雇用形態で異なるため）。判断材料としてご覧ください。</span>
+    </div>
+  </div>
+
+  <p class="note" id="deficitNote">損益の2つの見方: <b>会計上の粗利</b>＝落札価格-買取価格/1.1（仕入と売価の差だけを見る経理的な粗利）。<b>最終利益</b>＝会計上の粗利-発送送料/1.1（-返品ありの場合はさらに返送料/1.1）。上部のセレクタで切り替えられます。<br>
+  ・返品→再出品→再販が同じ期間内に起きた場合、落札価格は<b>最終的に売れた価格</b>を採用し、送料は<b>最終の発送1回分</b>のみを計上します（発送時の送料はお客様負担で、受け取った送料をそのまま配送業者に支払うため当社の持ち出しにならないという運用実態に合わせています。厳密には契約送料との差額が利益になりますが、ここでは利益として考慮していません）。<br>
+  ・例）買取10,000円・最終落札13,000円・送料2,440円(税込)の場合 → 会計上の粗利=13,000-9,091=3,909円 / 最終利益=3,909-2,218=1,691円<br>
+  <br>
+  赤字(原価割れ)の定義: 実質粗利(落札価格-買取価格/1.1-発送送料) が0未満の商品。加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の返送料(ヤフオク配送料)も赤字額に加算しています(total_deficit=正の値ほど赤字が大きいことを表します)。対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。発送送料は「ヤフオク配送料」列を基準に、数値ならそのまま採用、"らくらく家財便"の場合は受注_通常_出荷の実際の送料を突合して採用、"直引"の場合は0円としています。<br>
   上部の拠点セレクタ(「全拠点」または1拠点)と、このページのカテゴリ複数選択で対象を絞り込めます。カテゴリは何も選択しない状態が「全カテゴリ」、複数選択した場合はその合算です。絞り込みはこのページの全セクション(KPI・カテゴリ別比較・推移・仕入れ方法別比較)に同じ条件で反映されます。</p>
 
 </div>
@@ -1135,6 +1166,8 @@ const PRICE_BAND_ROWS = rehydrateRows(DATA.price_band_rows);
 const PROFIT_VARIANCE_ROWS = rehydrateRows(DATA.profit_variance_rows);
 const CATEGORY_PROFIT_DETAIL_ROWS = rehydrateRows(DATA.category_profit_detail_rows);
 const DEFICIT_ROWS = rehydrateRows(DATA.deficit_rows);
+// ⑦: 「会計上の粗利」と「最終利益」の2軸で集計した行
+const DEFICIT_MODE_ROWS = rehydrateRows(DATA.deficit_mode_rows);
 // ⑥粗利差異ページ: コンディション別・価格帯別に上振れ/下振れを分解した行
 const VARIANCE_CONDITION_ROWS = rehydrateRows(DATA.variance_condition_rows);
 const VARIANCE_BAND_ROWS = rehydrateRows(DATA.variance_band_rows);
@@ -2486,20 +2519,35 @@ function renderJunkHeatmap() {
 }
 
 // ---------- detail table (Grid.js, raw numeric cell values + formatter for correct sorting) ----------
+// 詳細テーブルのヒートマップ色付け。
+// 「値が大きいほど悪い」指標(SR率・返金額・返金額率・返金1件あたり・質問率・ジャンク出品率)を
+// 列ごとの最大値で正規化し、赤の濃さで表す。列内の最大値は renderTableInto で毎回計算する。
+let DETAIL_HEAT_MAX = {};
+
+function heatCell(text, value, colKey) {
+  const max = DETAIL_HEAT_MAX[colKey] || 0;
+  if (!(value > 0) || !(max > 0)) return text;
+  const ratio = Math.min(1, value / max);
+  // 薄すぎると見えないので下限を持たせる。上位ほど濃い赤になる。
+  const alpha = (0.06 + 0.44 * ratio).toFixed(3);
+  return gridjs.html('<div style="background:rgba(224,101,58,' + alpha +
+    ');margin:-8px -10px;padding:8px 10px;text-align:right;">' + text + '</div>');
+}
+
 const DETAIL_COLUMNS = (nameLabel) => [
   { name: nameLabel },
   { name: '問合せ件数', formatter: c => fmtInt(c) },
   { name: '問合せ率', formatter: c => c < 0 ? '-' : fmtPct(c) },
   { name: 'SR件数', formatter: c => fmtInt(c) },
-  { name: 'SR率', formatter: c => c < 0 ? '-' : fmtPct(c) },
-  { name: '返金額(円)', formatter: c => fmtYen(c) },
-  { name: '返金額率', formatter: c => c < 0 ? '-' : fmtPct(c) },
+  { name: 'SR率', formatter: c => c < 0 ? '-' : heatCell(fmtPct(c), c, 'sr_rate') },
+  { name: '返金額(円)', formatter: c => heatCell(fmtYen(c), c, 'refund_amount') },
+  { name: '返金額率', formatter: c => c < 0 ? '-' : heatCell(fmtPct(c), c, 'refund_rate') },
   { name: '返金件数', formatter: c => fmtInt(c) },
-  { name: '返金1件あたり(円)', formatter: c => c < 0 ? '-' : fmtYen(c) },
+  { name: '返金1件あたり(円)', formatter: c => c < 0 ? '-' : heatCell(fmtYen(c), c, 'avg_refund') },
   { name: '質問数', formatter: c => fmtInt(c) },
-  { name: '質問率', formatter: c => c < 0 ? '-' : fmtPct(c) },
+  { name: '質問率', formatter: c => c < 0 ? '-' : heatCell(fmtPct(c), c, 'question_rate') },
   { name: 'ジャンク出品件数', formatter: c => fmtInt(c) },
-  { name: 'ジャンク出品率', formatter: c => c < 0 ? '-' : fmtPct(c) },
+  { name: 'ジャンク出品率', formatter: c => c < 0 ? '-' : heatCell(fmtPct(c), c, 'junk_listed_rate') },
   { name: '出荷商品数', formatter: c => fmtInt(c) },
   { name: '出品数', formatter: c => fmtInt(c) },
   { name: '売上金額(円)', formatter: c => fmtYen(c) },
@@ -2533,6 +2581,16 @@ function detailRow(d) {
 const gridRegistry = {};
 function renderTableInto(containerId, data, nameLabel, limit) {
   const container = document.getElementById(containerId);
+  // 色付けの基準になる列内の最大値を先に求める(値が大きいほど濃い赤にする)
+  const maxOf = f => data.reduce((a, d) => Math.max(a, (d[f] != null && d[f] > 0) ? d[f] : 0), 0);
+  DETAIL_HEAT_MAX = {
+    sr_rate: maxOf('sr_rate'),
+    refund_amount: maxOf('refund_amount'),
+    refund_rate: maxOf('refund_rate'),
+    avg_refund: maxOf('avg_refund_amount'),
+    question_rate: maxOf('question_rate'),
+    junk_listed_rate: maxOf('junk_listed_rate')
+  };
   const columns = DETAIL_COLUMNS(nameLabel);
   const rows = data.map(detailRow);
   const paginationCfg = { limit: limit || 20 };
@@ -3507,7 +3565,43 @@ function renderDeficitInsight() {
   el.textContent = lines.join('\n');
 }
 
+// ⑦: 「会計上の粗利」と「最終利益」の2軸サマリーを出す
+function renderDeficitModeSummary() {
+  const el = document.getElementById('deficitModeKpi');
+  if (!el || typeof DEFICIT_MODE_ROWS === 'undefined') return;
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const loc = locSel.value, useLoc = loc && loc !== ALL_LOC;
+  const cats = deficitCatMultiSel ? getMultiSelectValues(deficitCatMultiSel) : [];
+  const catSet = cats.length ? new Set(cats) : null;
+  const rows = DEFICIT_MODE_ROWS.filter(r =>
+    (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
+    (!useLoc || r.location === loc) && (!catSet || catSet.has(r.category)));
+  const t = rows.reduce((a, r) => {
+    ['shipped_count', 'acc_deficit_count', 'acc_deficit_amount', 'acc_profit_sum',
+     'fin_deficit_count', 'fin_deficit_amount', 'fin_profit_sum',
+     'shipping_fee_total', 'return_shipping_total'].forEach(f => a[f] = (a[f] || 0) + (r[f] || 0));
+    return a;
+  }, {});
+  const mode = (document.getElementById('deficitMode') || {}).value || 'fin';
+  const isFin = mode === 'fin';
+  el.innerHTML = [
+    metricSimpleCardHtml('出荷商品数', fmtInt(t.shipped_count) + '点'),
+    metricSimpleCardHtml('会計上の粗利(合計)', fmtYen(t.acc_profit_sum)),
+    metricSimpleCardHtml('会計上の赤字', fmtInt(t.acc_deficit_count) + '点 / ' + fmtYen(t.acc_deficit_amount)),
+    metricSimpleCardHtml('最終利益(合計)', fmtYen(t.fin_profit_sum)),
+    metricSimpleCardHtml('最終利益ベースの赤字', fmtInt(t.fin_deficit_count) + '点 / ' + fmtYen(t.fin_deficit_amount)),
+    metricSimpleCardHtml('差(送料+返送料)', fmtYen((t.shipping_fee_total || 0) + (t.return_shipping_total || 0))),
+    metricSimpleCardHtml('赤字率(' + (isFin ? '最終利益' : '会計上') + ')',
+      t.shipped_count ? fmtPct((isFin ? t.fin_deficit_count : t.acc_deficit_count) / t.shipped_count) : '-'),
+    metricSimpleCardHtml('1点あたり赤字(' + (isFin ? '最終利益' : '会計上') + ')',
+      (isFin ? t.fin_deficit_count : t.acc_deficit_count)
+        ? fmtYen((isFin ? t.fin_deficit_amount : t.acc_deficit_amount) / (isFin ? t.fin_deficit_count : t.acc_deficit_count))
+        : '-')
+  ].join('');
+}
+
 function renderDeficitPage() {
+  renderDeficitModeSummary();
   renderDeficitInsight();
   renderDeficitKPIs();
   renderDeficitTrend();
@@ -4331,6 +4425,10 @@ locSel.addEventListener('change', () => {
 if (detailCatMultiSel) detailCatMultiSel.addEventListener('change', () => { if (currentPage === 'detail') renderPageContent(); });
 
 if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
+{
+  const dm = document.getElementById('deficitMode');
+  if (dm) dm.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
+}
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ');

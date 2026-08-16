@@ -195,6 +195,9 @@ def run_stage(stage: str):
         print(f"category_profit_detail/deficit: {time.time()-t0:.1f}s n={len(cpd)}/{len(deficit)}", flush=True)
         save("category_profit_detail_rows", cpd)
         save("deficit_rows", deficit)
+        dm = m.build_deficit_mode_rows(weeks, detail, cost_master)
+        print(f"  損益2軸(会計上の粗利/最終利益): {len(dm):,}行", flush=True)
+        save("deficit_mode_rows", dm)
 
     elif stage == "customer_segments":
         # ⑨ SRリピーター・ロイヤルカスタマー分析。受注_通常_出荷の顧客情報(氏名・住所・
@@ -272,6 +275,7 @@ def run_stage(stage: str):
         variance_band_rows = load("variance_band_rows") if has("variance_band_rows") else []
         category_profit_detail_rows = load("category_profit_detail_rows")
         deficit_rows = load("deficit_rows")
+        deficit_mode_rows = load("deficit_mode_rows") if has("deficit_mode_rows") else []
         customer_segment_rows = load("customer_segment_rows") if has("customer_segment_rows") else []
         customer_detail_rows = load("customer_detail_rows") if has("customer_detail_rows") else []
 
@@ -327,6 +331,7 @@ def run_stage(stage: str):
             "variance_band_rows": variance_band_rows,
             "category_profit_detail_rows": category_profit_detail_rows,
             "deficit_rows": deficit_rows,
+            "deficit_mode_rows": deficit_mode_rows,
             "customer_segment_rows": customer_segment_rows,
             "customer_detail_rows": customer_detail_rows,
             "insights": m.STATIC_INSIGHTS,

@@ -2183,6 +2183,99 @@ def build_return_product_ids(weeks: list[WeekFiles]) -> set[str]:
     return set(ids.dropna())
 
 
+def aggregate_deficit_modes(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
+) -> pd.DataFrame:
+    """⑦赤字ページ用に、2つの見方の損益を1商品ごとに算出する。
+
+    ① 会計上の粗利  = 落札価格 - 買取価格/1.1
+         仕入と売価の差だけを見る、経理的な粗利。送料や返送料は含めない。
+    ② 最終利益      = 落札価格 - 買取価格/1.1 - 発送送料/1.1 (- 返品ありなら返送料/1.1)
+         実際に手元に残る利益。
+
+    【返品→再出品→再販が同一期間内に起きた場合】
+      商品_出荷(JPONベース)は同じ商品IDが再出現するため concat_and_dedup で
+      「最後に現れた行(=再販時の落札価格)」を採用している。したがって落札価格は
+      自動的に最終的な販売価格になる。送料は「最終の発送1回分」のみを計上する
+      (運用確認: 発送時の送料はお客様負担で、受け取った送料をそのまま配送業者に
+       支払うため当社の持ち出しにならない。厳密には契約送料との差額が利益になるが、
+       ここでは利益として考慮しない)。
+
+      例) 買取10,000円・最終落札13,000円・送料2,440円(税込)の場合
+          会計上の粗利 = 13,000 - 9,091 = 3,909円
+          最終利益     = 13,000 - 9,091 - 2,218 = 1,691円
+    """
+    if detail.empty:
+        return pd.DataFrame()
+    d = detail.copy()
+    return_ids = build_return_product_ids(weeks)
+
+    def _return_ship(norm_id):
+        if not norm_id or norm_id not in return_ids:
+            return 0.0
+        info = cost_master.get(norm_id)
+        return to_excl_tax(info[1]) if info else 0.0
+
+    d["return_shipping_amount"] = d["norm_product_id"].map(_return_ship)
+    # actual_profit は既に 落札価格 - 買取価格/1.1 (税抜)
+    d["accounting_profit"] = d["actual_profit"]
+    # shipping_fee は build_shukka_detail 時点で税抜換算済み
+    d["final_profit_item"] = d["actual_profit"] - d["shipping_fee"] - d["return_shipping_amount"]
+    return d
+
+
+DEFICIT_MODE_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "procurement_type",
+    "shipped_count",
+    "acc_deficit_count", "acc_deficit_amount", "acc_profit_sum",
+    "fin_deficit_count", "fin_deficit_amount", "fin_profit_sum",
+    "shipping_fee_total", "return_shipping_total",
+]
+
+
+def build_deficit_mode_rows(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
+) -> list[dict]:
+    """「会計上の粗利」と「最終利益」の2軸で、赤字件数・赤字額・利益合計を集計する。"""
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return []
+    d["acc_is_deficit"] = d["accounting_profit"] < 0
+    d["fin_is_deficit"] = d["final_profit_item"] < 0
+    d["acc_deficit_amount"] = (-d["accounting_profit"]).where(d["acc_is_deficit"], 0.0)
+    d["fin_deficit_amount"] = (-d["final_profit_item"]).where(d["fin_is_deficit"], 0.0)
+    grouped = (
+        d.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
+        .agg(
+            shipped_count=("accounting_profit", "size"),
+            acc_deficit_count=("acc_is_deficit", "sum"),
+            acc_deficit_amount=("acc_deficit_amount", "sum"),
+            acc_profit_sum=("accounting_profit", "sum"),
+            fin_deficit_count=("fin_is_deficit", "sum"),
+            fin_deficit_amount=("fin_deficit_amount", "sum"),
+            fin_profit_sum=("final_profit_item", "sum"),
+            shipping_fee_total=("shipping_fee", "sum"),
+            return_shipping_total=("return_shipping_amount", "sum"),
+        )
+        .reset_index()
+    )
+    return [
+        {
+            **{c: r[c] for c in ["week_start", "week_end", "year_month", "location", "category", "procurement_type"]},
+            "shipped_count": int(r["shipped_count"]),
+            "acc_deficit_count": int(r["acc_deficit_count"]),
+            "acc_deficit_amount": _safe_float(r["acc_deficit_amount"]),
+            "acc_profit_sum": _safe_float(r["acc_profit_sum"]),
+            "fin_deficit_count": int(r["fin_deficit_count"]),
+            "fin_deficit_amount": _safe_float(r["fin_deficit_amount"]),
+            "fin_profit_sum": _safe_float(r["fin_profit_sum"]),
+            "shipping_fee_total": _safe_float(r["shipping_fee_total"]),
+            "return_shipping_total": _safe_float(r["return_shipping_total"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+
+
 def aggregate_deficit(
     weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
 ) -> pd.DataFrame:
