@@ -2324,8 +2324,11 @@ def build_customer_clusters(weeks: list[WeekFiles]) -> tuple[pd.DataFrame, list[
 
 
 def build_customer_segment_rows(
-    weeks: list[WeekFiles], cost_master: dict[str, tuple[float, float]]
-) -> tuple[list[dict], list[dict], dict]:
+    weeks: list[WeekFiles],
+    cost_master: dict[str, tuple[float, float]],
+    attr_master: Optional[dict[str, tuple[str, str, int]]] = None,
+    category_master: Optional[dict[str, str]] = None,
+) -> tuple[list[dict], list[dict], dict, list[dict]]:
     """顧客(名寄せクラスタ)単位の指標を算出し、
     (ダッシュボード用の匿名行, customer_lookup.csv用のPII行, 集計メタ情報) を返す。
 
@@ -2381,6 +2384,12 @@ def build_customer_segment_rows(
                 for nid in sdf["商品ID"].map(normalize_product_id):
                     if nid:
                         shukka_ids.add(nid)
+    # 顧客ドリルダウン用の商品属性(状態・価格帯・カテゴリ)。未指定ならここで作る。
+    attr_master = attr_master if attr_master is not None else build_product_attr_master(weeks)
+    category_master = category_master if category_master is not None else build_product_category_master(weeks)
+    purchase_detail = pd.DataFrame()
+    sr_detail = pd.DataFrame()
+    refund_detail = pd.DataFrame()
     shipped_agg = pd.DataFrame(columns=["_cluster", "shipped_count", "gross_profit"])
     if jpon_frames:
         jpon = concat_and_dedup(jpon_frames, id_col="オークションID")
@@ -2414,6 +2423,18 @@ def build_customer_segment_rows(
             .agg(shipped_count=("受注ID", "size"), gross_profit=("粗利_row", "sum"))
             .reset_index()
         )
+        # 顧客詳細(⑧のドリルダウン)用: 購入をカテゴリ・コンディション・価格帯で分解する。
+        # 商品名などの自由記述は公開ページに出さないため、ここでは集計値のみを持つ。
+        attrs = merged["_norm_id"].map(lambda nid: attr_master.get(nid, UNKNOWN_ATTR) if nid else UNKNOWN_ATTR)
+        merged["_condition"] = attrs.map(lambda t: t[0])
+        merged["_price_band"] = attrs.map(lambda t: t[1])
+        merged["_band_sort"] = attrs.map(lambda t: t[2])
+        merged["_category"] = merged["_norm_id"].map(category_master).fillna("不明")
+        purchase_detail = (
+            merged.groupby(["_cluster", "_category", "_condition", "_price_band", "_band_sort"])
+            .agg(count=("受注ID", "size"), sales_amount=("落札金額_num", "sum"), gross_profit=("粗利_row", "sum"))
+            .reset_index()
+        )
 
     # --- SR発生件数(CS_登録【分類用】の 種別=SR を「受注ID」で紐付け) ---
     cs_frames = []
@@ -2439,6 +2460,17 @@ def build_customer_segment_rows(
                 matched.groupby("_cluster").size().reset_index(name="sr_count")
             )
             sr_agg["_cluster"] = sr_agg["_cluster"].astype(per_cluster["_cluster"].dtype)
+            # 顧客詳細用: SRをカテゴリ×大項目×返品有無で分解する(自由記述は含めない)
+            md = matched.copy()
+            md["_category"] = md["カテゴリ"].fillna("不明").replace("", "不明")
+            md["_major"] = md["分類"].map(extract_major_category).fillna("(未分類)") if "分類" in md.columns else "(未分類)"
+            md["_returned"] = md["返品"].fillna("").astype(str).str.strip().map(lambda v: "返品あり" if v == "あり" else "返品なし")
+            md["_refund"] = to_numeric(md["返金額"]) if "返金額" in md.columns else 0
+            sr_detail = (
+                md.groupby(["_cluster", "_category", "_major", "_returned"])
+                .agg(count=("受注ID", "size"), refund_amount=("_refund", "sum"))
+                .reset_index()
+            )
 
     # --- 返金額・返送料(CS_返金を「受注ID」で紐付け) ---
     henkin_frames = []
@@ -2468,6 +2500,15 @@ def build_customer_segment_rows(
 
             hen["返送料_num"] = 0.0
             hen.loc[is_return, "返送料_num"] = hen.loc[is_return, "_norm_id"].map(_shipping_fee)
+            # 顧客詳細用: 返金をカテゴリ×返品有無で分解する(返金額はCS_返金が正)
+            hen["_category"] = hen["カテゴリ"].fillna("不明").replace("", "不明") if "カテゴリ" in hen.columns else "不明"
+            hen["_returned"] = is_return.map(lambda v: "返品あり" if v else "返品なし")
+            refund_detail = (
+                hen.groupby(["_cluster", "_category", "_returned"])
+                .agg(count=("返金額_num", "size"), refund_amount=("返金額_num", "sum"),
+                     return_shipping_cost=("返送料_num", "sum"))
+                .reset_index()
+            )
             refund_agg = (
                 hen.groupby("_cluster")
                 .agg(refund_amount=("返金額_num", "sum"), return_shipping_cost=("返送料_num", "sum"))
@@ -2557,7 +2598,50 @@ def build_customer_segment_rows(
     label_of_cluster = dict(zip(cust["_cluster"], cust["label"]))
     lookup = _build_customer_lookup_records(tsujo, shown_clusters, label_of_cluster)
     meta["lookup_count"] = len(lookup)
-    return rows, lookup, meta
+
+    # --- 顧客ドリルダウン用の内訳(⑧で顧客をクリックしたときに表示する) ---
+    # 一覧に出る顧客(SRリピーター+ロイヤルカスタマー)のぶんだけ作る。
+    # 商品名やSRの自由記述は含めず、件数・金額の集計のみ(公開ページに載るため)。
+    # すべての内訳行で同じキーを持たせる(埋め込み時に列配列化するため、
+    # 種類ごとにキーが違うと後ろの種類の列が失われてしまう)
+    DETAIL_FIELDS = {
+        "label": "", "kind": "", "category": "", "condition": "", "price_band": "",
+        "price_band_sort": 0, "major": "", "returned": "",
+        "count": 0, "sales_amount": 0.0, "gross_profit": 0.0, "refund_amount": 0.0,
+    }
+
+    def _detail(**kw):
+        rec = dict(DETAIL_FIELDS)
+        rec.update(kw)
+        return rec
+
+    detail_rows: list[dict] = []
+    if not purchase_detail.empty:
+        pd_shown = purchase_detail[purchase_detail["_cluster"].isin(shown_clusters)]
+        for _, r in pd_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="purchase",
+                category=r["_category"], condition=r["_condition"],
+                price_band=r["_price_band"], price_band_sort=int(r["_band_sort"]),
+                count=int(r["count"]), sales_amount=round(float(r["sales_amount"]), 2),
+                gross_profit=round(float(r["gross_profit"]), 2)))
+    if not sr_detail.empty:
+        sr_shown = sr_detail[sr_detail["_cluster"].isin(shown_clusters)]
+        for _, r in sr_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="sr",
+                category=r["_category"], major=r["_major"], returned=r["_returned"],
+                count=int(r["count"]), refund_amount=round(float(r["refund_amount"]), 2)))
+    if not refund_detail.empty:
+        rf_shown = refund_detail[refund_detail["_cluster"].isin(shown_clusters)]
+        for _, r in rf_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="refund",
+                category=r["_category"], returned=r["_returned"],
+                count=int(r["count"]), refund_amount=round(float(r["refund_amount"]), 2)))
+    meta["customer_detail_count"] = len(detail_rows)
+    print(f"[情報] 顧客詳細(内訳)行: {len(detail_rows):,}行", flush=True)
+    return rows, lookup, meta, detail_rows
 
 
 def _mode_value(series: pd.Series) -> str:

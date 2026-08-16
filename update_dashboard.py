@@ -128,6 +128,7 @@ def main():
     # ⑧顧客セグメントは全期間の名寄せが必要で21期だけでは作れないため、凍結データがあれば
     # そのまま引き継ぐ(無ければ空。ページ自体は空表示になるだけで他ページには影響しない)。
     data["customer_segment_rows"] = frozen.get("customer_segment_rows") or []
+    data["customer_detail_rows"] = frozen.get("customer_detail_rows") or []
 
     data["insights"] = auto_insights.build_insights(data)
     Path(args.output).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

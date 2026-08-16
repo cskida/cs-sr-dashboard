@@ -813,6 +813,12 @@ html = r'''<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="card insight-box" id="custDrillBox" style="display:none;">
+    <h3 id="custDrillTitle">顧客の詳細</h3>
+    <div class="insight-meta">一覧の「顧客」名をクリックすると、その顧客の購入内訳とSR内訳を表示します。</div>
+    <div id="custDrillBody"></div>
+  </div>
+
   <div class="card table-section">
     <h3 id="customerTableTitle">顧客別 詳細</h3>
     <div id="detailTableCustomer" class="detail-table"></div>
@@ -1050,6 +1056,17 @@ const DEFICIT_ROWS = rehydrateRows(DATA.deficit_rows);
 // segment 列が 'sr_repeater' / 'loyal_customer' のどちらのセグメントかを表す。
 // 匿名ラベルと数値指標のみで、氏名・住所・電話番号等の個人情報は含まれない。
 const CUSTOMER_SEGMENT_ROWS = rehydrateRows(DATA.customer_segment_rows);
+// ⑧で顧客をクリックしたときに表示する内訳(購入・SR)。件数と金額の集計のみで、
+// 商品名やSRの自由記述は含めない(公開ページに載るため)。
+const CUSTOMER_DETAIL_ROWS = rehydrateRows(DATA.customer_detail_rows);
+const CUSTOMER_DETAIL_BY_LABEL = (() => {
+  const map = new Map();
+  CUSTOMER_DETAIL_ROWS.forEach(r => {
+    if (!map.has(r.label)) map.set(r.label, []);
+    map.get(r.label).push(r);
+  });
+  return map;
+})();
 const INSIGHTS = DATA.insights || {};
 const CONDITION_ORDER = ['ジャンク(J)', '程度不良(D)', '一般中古(C)', '程度良好(B)', '美品(A)', '未使用品(S)', '新品(N)'];
 
@@ -3020,7 +3037,13 @@ function customerSegmentData(segment) {
 }
 
 const CUSTOMER_TABLE_COLUMNS = [
-  { name: '顧客' },
+  {
+    name: '顧客',
+    // クリックでその顧客の内訳(購入・SR)を上部に表示する
+    formatter: (cell) => gridjs.html(
+      '<a href="#" class="cust-drill" data-label="' + cell + '" ' +
+      'style="color:#2455c9;text-decoration:underline;cursor:pointer;">' + cell + '</a>')
+  },
   { name: '種別' },
   { name: '発送商品数', formatter: c => fmtInt(c) },
   { name: '同梱率', formatter: c => fmtPct(c) },
@@ -3103,6 +3126,148 @@ function renderCustomerPage() {
   document.getElementById('customerTableTitle').textContent =
     meta.title + ' 顧客別詳細(' + fmtInt(agg.customer_count) + '人)';
   renderSimpleTableInto('detailTableCustomer', CUSTOMER_TABLE_COLUMNS, tableRows, 20);
+}
+
+// 顧客1人分の内訳を表示する(購入カテゴリ別のSR率 / SR大項目 / 返品有無 / コンディション・価格帯)
+function renderCustomerDrill(label) {
+  const box = document.getElementById('custDrillBox');
+  const body = document.getElementById('custDrillBody');
+  if (!box || !body) return;
+  const rows = CUSTOMER_DETAIL_BY_LABEL.get(label) || [];
+  const seg = CUSTOMER_SEGMENT_ROWS.find(r => r.label === label) || {};
+  box.style.display = '';
+  document.getElementById('custDrillTitle').textContent =
+    label + ' の詳細(' + (seg.customer_type || '個人') + ')  発送' + fmtInt(seg.shipped_count) +
+    '件 / SR' + fmtInt(seg.sr_count) + '件 / 返金' + fmtYen(seg.refund_amount);
+  if (!rows.length) { body.innerHTML = '<p class="note">この顧客の内訳データはありません。</p>'; return; }
+
+  const purchases = rows.filter(r => r.kind === 'purchase');
+  const srs = rows.filter(r => r.kind === 'sr');
+  // 返金はCS_返金が正(SR側の返金額列は未入力のことが多いため、金額・返品有無はこちらを使う)
+  const refunds = rows.filter(r => r.kind === 'refund');
+  const sum = (arr, f) => arr.reduce((a, r) => a + (r[f] || 0), 0);
+
+  const tbl = (title, head, body2) =>
+    '<h4 style="margin:14px 0 6px;">' + title + '</h4>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr>' +
+    head.map(h => '<th style="padding:5px 9px;border:1px solid #e3e5e8;background:#f5f6f8;text-align:' +
+      (h.num ? 'right' : 'left') + ';">' + h.name + '</th>').join('') +
+    '</tr></thead><tbody>' + body2 + '</tbody></table>';
+  const td = (v, num) => '<td style="padding:5px 9px;border:1px solid #e3e5e8;text-align:' + (num ? 'right' : 'left') + ';">' + v + '</td>';
+
+  // カテゴリ別: 購入数とSR件数を突き合わせてSR率を出す
+  const byCat = new Map();
+  purchases.forEach(r => {
+    const o = byCat.get(r.category) || { buy: 0, sales: 0, profit: 0, sr: 0, refund: 0 };
+    o.buy += r.count || 0; o.sales += r.sales_amount || 0; o.profit += r.gross_profit || 0;
+    byCat.set(r.category, o);
+  });
+  srs.forEach(r => {
+    const o = byCat.get(r.category) || { buy: 0, sales: 0, profit: 0, sr: 0, refund: 0 };
+    o.sr += r.count || 0;
+    byCat.set(r.category, o);
+  });
+  refunds.forEach(r => {
+    const o = byCat.get(r.category) || { buy: 0, sales: 0, profit: 0, sr: 0, refund: 0 };
+    o.refund += r.refund_amount || 0;
+    byCat.set(r.category, o);
+  });
+  const catList = Array.from(byCat.entries()).sort((a, b) => (b[1].sr - a[1].sr) || (b[1].buy - a[1].buy));
+  const catTotal = catList.reduce((a, [, o]) => ({
+    buy: a.buy + o.buy, sr: a.sr + o.sr, sales: a.sales + o.sales, refund: a.refund + o.refund
+  }), { buy: 0, sr: 0, sales: 0, refund: 0 });
+  const totalTd = (v, num) => '<td style="padding:5px 9px;border:1px solid #e3e5e8;background:#eef1f5;font-weight:700;text-align:' +
+    (num ? 'right' : 'left') + ';">' + v + '</td>';
+  const catRows = catList
+    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.buy), 1) + td(fmtInt(o.sr), 1) +
+      td(o.buy ? fmtPct(o.sr / o.buy) : '-', 1) + td(fmtYen(o.sales), 1) + td(fmtYen(o.refund), 1) +
+      td(o.sales ? fmtPct(o.refund / o.sales) : '-', 1) + '</tr>').join('') +
+    '<tr>' + totalTd('合計') + totalTd(fmtInt(catTotal.buy), 1) + totalTd(fmtInt(catTotal.sr), 1) +
+      totalTd(catTotal.buy ? fmtPct(catTotal.sr / catTotal.buy) : '-', 1) + totalTd(fmtYen(catTotal.sales), 1) +
+      totalTd(fmtYen(catTotal.refund), 1) + totalTd(catTotal.sales ? fmtPct(catTotal.refund / catTotal.sales) : '-', 1) + '</tr>';
+
+  // SR大項目 × 返品有無
+  const byMajor = new Map();
+  srs.forEach(r => {
+    const key = r.major || '(未分類)';
+    const o = byMajor.get(key) || { n: 0 };
+    o.n += r.count || 0;
+    byMajor.set(key, o);
+  });
+  const majorRows = Array.from(byMajor.entries()).sort((a, b) => b[1].n - a[1].n)
+    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + '</tr>').join('');
+
+  // 返品有無 × 返金額(CS_返金ベース)
+  const byRet = new Map();
+  refunds.forEach(r => {
+    const o = byRet.get(r.returned) || { n: 0, amt: 0 };
+    o.n += r.count || 0; o.amt += r.refund_amount || 0;
+    byRet.set(r.returned, o);
+  });
+  const totalSales = catTotal.sales;
+  const retList = Array.from(byRet.entries()).sort((a, b) => b[1].amt - a[1].amt);
+  const retTotalRow = retList.reduce((a, [, o]) => ({ n: a.n + o.n, amt: a.amt + o.amt }), { n: 0, amt: 0 });
+  const retRows = retList
+    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + td(fmtYen(o.amt), 1) +
+      td(o.n ? fmtYen(o.amt / o.n) : '-', 1) + td(totalSales ? fmtPct(o.amt / totalSales) : '-', 1) + '</tr>').join('') +
+    '<tr>' + totalTd('合計') + totalTd(fmtInt(retTotalRow.n), 1) + totalTd(fmtYen(retTotalRow.amt), 1) +
+      totalTd(retTotalRow.n ? fmtYen(retTotalRow.amt / retTotalRow.n) : '-', 1) +
+      totalTd(totalSales ? fmtPct(retTotalRow.amt / totalSales) : '-', 1) + '</tr>';
+
+  // コンディション・価格帯
+  const agg = (field) => {
+    const m2 = new Map();
+    purchases.forEach(r => {
+      const o = m2.get(r[field]) || { n: 0, sales: 0, sort: r.price_band_sort || 0 };
+      o.n += r.count || 0; o.sales += r.sales_amount || 0;
+      m2.set(r[field], o);
+    });
+    return Array.from(m2.entries());
+  };
+  const condRows = agg('condition').sort((a, b) => conditionSortKey(a[0]) - conditionSortKey(b[0]))
+    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + td(fmtYen(o.sales), 1) + '</tr>').join('');
+  const bandRows = agg('price_band').sort((a, b) => a[1].sort - b[1].sort)
+    .map(([k, o]) => '<tr>' + td(k) + td(fmtInt(o.n), 1) + td(fmtYen(o.sales), 1) + '</tr>').join('');
+
+  const retTotal = refunds.filter(r => r.returned === '返品あり').reduce((a, r) => a + (r.count || 0), 0);
+  const tBuy = sum(purchases, 'count'), tSr = sum(srs, 'count');
+  const tRefN = sum(refunds, 'count'), tRefAmt = sum(refunds, 'refund_amount');
+  const tSales = sum(purchases, 'sales_amount'), tProfit = sum(purchases, 'gross_profit');
+  body.innerHTML =
+    '<div class="kpi-grid" style="margin:10px 0 4px;">' +
+    metricSimpleCardHtml('購入数', fmtInt(tBuy) + '点') +
+    metricSimpleCardHtml('SR発生件数', fmtInt(tSr) + '件') +
+    metricSimpleCardHtml('SR率(平均)', tBuy ? fmtPct(tSr / tBuy) : '-') +
+    metricSimpleCardHtml('返金件数', fmtInt(tRefN) + '件(返品' + fmtInt(retTotal) + '件)') +
+    metricSimpleCardHtml('返金額', fmtYen(tRefAmt)) +
+    metricSimpleCardHtml('返金額率(平均)', tSales ? fmtPct(tRefAmt / tSales) : '-') +
+    metricSimpleCardHtml('売上', fmtYen(tSales)) +
+    metricSimpleCardHtml('粗利率(平均)', tSales ? fmtPct(tProfit / tSales) : '-') +
+    '</div>' +
+    tbl('カテゴリ別のSR発生率・返金額率', [{ name: 'カテゴリ' }, { name: '購入数', num: 1 }, { name: 'SR件数', num: 1 },
+      { name: 'SR率', num: 1 }, { name: '売上(円)', num: 1 }, { name: '返金額(円)', num: 1 },
+      { name: '返金額率', num: 1 }], catRows) +
+    (majorRows ? tbl('SR大項目の内訳', [{ name: 'SR大項目' }, { name: '件数', num: 1 }], majorRows) : '') +
+    (retRows ? tbl('返品有無・返金額', [{ name: '返品' }, { name: '返金件数', num: 1 },
+      { name: '返金額(円)', num: 1 }, { name: '1件あたり', num: 1 }, { name: '返金額率(対売上)', num: 1 }], retRows) : '') +
+    '<div class="mini-charts-grid" style="margin-top:6px;"><div>' +
+    tbl('コンディション別の購入', [{ name: 'コンディション' }, { name: '購入数', num: 1 }, { name: '売上(円)', num: 1 }], condRows) +
+    '</div><div>' +
+    tbl('価格帯別の購入', [{ name: '価格帯' }, { name: '購入数', num: 1 }, { name: '売上(円)', num: 1 }], bandRows) +
+    '</div></div>';
+}
+
+// 顧客名クリックの受け口(Grid.jsは再描画で要素が入れ替わるためイベント委譲で拾う)
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (t && t.classList && t.classList.contains('cust-drill')) {
+      ev.preventDefault();
+      renderCustomerDrill(t.getAttribute('data-label'));
+      const box = document.getElementById('custDrillBox');
+      if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
 }
 
 function setCustomerSegment(segment) {
