@@ -235,7 +235,7 @@ html = r'''<!DOCTYPE html>
     <label>期間粒度</label>
     <select id="granularity">
       <option value="week">週次</option>
-      <option value="month">月次</option>
+      <option value="month" selected>月次</option>
       <option value="quarter">四半期</option>
       <option value="half">半期</option>
       <option value="year">通期</option>
@@ -1365,12 +1365,12 @@ if (deficitCatMultiSel) {
 const cpdCategories = Array.from(new Set(CATEGORY_PROFIT_DETAIL_ROWS.map(r => r.category))).sort();
 const cpdCatMultiSel = document.getElementById('cpdCatMultiSelect');
 if (cpdCatMultiSel) {
+  // 先頭に「(全カテゴリ)」を用意し、既定でこれを選択する
+  const allOpt = document.createElement('option');
+  allOpt.value = ALL_CAT; allOpt.textContent = '(全カテゴリ)';
+  cpdCatMultiSel.appendChild(allOpt);
   cpdCategories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; cpdCatMultiSel.appendChild(o); });
-  const firstCpdCat = cpdCategories.find(c => c !== '不明' && c !== 'default') || cpdCategories[0];
-  if (firstCpdCat) {
-    const opt = Array.from(cpdCatMultiSel.options).find(o => o.value === firstCpdCat);
-    if (opt) opt.selected = true;
-  }
+  allOpt.selected = true;
   cpdCatMultiSel.addEventListener('change', () => { if (currentPage === 'profitvariance') renderCpdTrendSection(); });
 }
 
@@ -2999,6 +2999,15 @@ function renderCategoryProfitDetailSection() {
     renderChart('cpdProfitPriceChart', singleAxisMoneyConfig(data.map(d => d.name), data.map(d => d.avg_profit_price || 0), '粗利単価'));
   }
 
+  // 上振れ・下振れの件数と率をカテゴリ別に足す(profit_variance_rows から同じ期間・同じ絞り込みで集計)
+  const upDown = new Map();
+  PROFIT_VARIANCE_ROWS.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey)
+    .forEach(r => {
+      const o = upDown.get(r.category) || { count: 0, up: 0, down: 0 };
+      o.count += r.count || 0; o.up += r.upside_count || 0; o.down += r.downside_count || 0;
+      upDown.set(r.category, o);
+    });
+
   renderSimpleTableInto('detailTableCategoryProfitDetail', [
     { name: 'カテゴリ' },
     { name: '数量', formatter: c => fmtInt(c) },
@@ -3006,14 +3015,19 @@ function renderCategoryProfitDetailSection() {
     { name: '売上額(円)', formatter: c => fmtYen(c) },
     { name: '粗利額(円)', formatter: c => fmtYen(c) },
     { name: '粗利差異(円)', formatter: c => fmtYen(c) },
+    { name: '上振れ率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
+    { name: '下振れ率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
     { name: '平均リード(日)', formatter: c => (c === null || c === undefined) ? '-' : c.toFixed(1) },
     { name: '粗利率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
     { name: '販売単価(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) },
     { name: '粗利単価(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) }
-  ], data.map(d => [
-    d.name, d.count, d.cost_amount, d.sales_amount, d.gross_profit, d.variance_amount,
-    d.avg_lead_days, d.margin_rate, d.avg_sale_price, d.avg_profit_price
-  ]), 20);
+  ], data.map(d => {
+    const ud = upDown.get(d.name);
+    const upRate = ud && ud.count ? ud.up / ud.count : null;
+    const downRate = ud && ud.count ? ud.down / ud.count : null;
+    return [d.name, d.count, d.cost_amount, d.sales_amount, d.gross_profit, d.variance_amount,
+      upRate, downRate, d.avg_lead_days, d.margin_rate, d.avg_sale_price, d.avg_profit_price];
+  }), 20);
 }
 
 // F項目: カテゴリを選択(複数選択可)し、選択したカテゴリの「合計」「平均」それぞれの
@@ -3104,7 +3118,7 @@ function renderCpdTrendSection() {
   // 月次のときは、この節の各グラフも決算月×期の昨対比較にする(他のグラフは通常どおり描く)
   if (isYoyMode() && typeof CATEGORY_PROFIT_DETAIL_ROWS !== 'undefined' && cpdCatMultiSel) {
     const selCats = getMultiSelectValues(cpdCatMultiSel);
-    const catSet = selCats.length ? new Set(selCats) : null;
+    const catSet = (!selCats.length || selCats.includes(ALL_CAT)) ? null : new Set(selCats);
     const ser = buildYoyGeneric(CATEGORY_PROFIT_DETAIL_ROWS,
       ['count', 'sales_amount', 'gross_profit', 'variance_amount', 'cost_amount'],
       r => !catSet || catSet.has(r.category));
@@ -3127,14 +3141,8 @@ function renderCpdTrendSection() {
   const granularity = granSel.value;
   document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel();
   let selectedCats = getMultiSelectValues(cpdCatMultiSel);
-  if (!selectedCats.length) {
-    const firstCpdCat = cpdCategories.find(c => c !== '不明' && c !== 'default') || cpdCategories[0];
-    if (firstCpdCat) {
-      selectedCats = [firstCpdCat];
-      const opt = Array.from(cpdCatMultiSel.options).find(o => o.value === firstCpdCat);
-      if (opt) opt.selected = true;
-    }
-  }
+  // 「(全カテゴリ)」または未選択なら全カテゴリを対象にする
+  if (!selectedCats.length || selectedCats.includes(ALL_CAT)) selectedCats = cpdCategories.slice();
   const trend = buildCpdTrendSelected(granularity, selectedCats);
   const labels = trend.map(t => t.label);
 
@@ -3229,6 +3237,14 @@ function renderPvInsight() {
 }
 
 // ⑥粗利差異: 拠点・上振れ/下振れの絞り込みに応じて、コンディション別/価格帯別/カテゴリ別に分解する
+// 金額目盛りの表記。データが空/小さいときに 0.000001M のような表示にならないようにする。
+function moneyTick(v) {
+  const a = Math.abs(v);
+  if (a >= 1000000) return (v / 1000000).toFixed(1) + 'M';
+  if (a >= 1000) return Math.round(v / 1000) + 'k';
+  return Math.round(v);
+}
+
 function pvFilterState() {
   const loc = locSel.value;
   const useLoc = loc && loc !== ALL_LOC;
@@ -3265,26 +3281,31 @@ function renderPvBreakdowns() {
     return Array.from(map.entries());
   };
 
+  // 上振れ・下振れを常に併記する。以前は「差引」を選ぶと件数=対象商品数・比率=100%となり
+  // 意味のない列になっていたため、件数と率は上振れ/下振れそれぞれで出す形に改めた。
   const mkTable = (list, dimName, sortFn) => {
     const rows = list.slice().sort(sortFn);
-    const tot = rows.reduce((a, [, o]) => {
-      const p = pvPick(o, st.side);
-      return { n: a.n + p.n, amt: a.amt + p.amt, cnt: a.cnt + (o.count || 0) };
-    }, { n: 0, amt: 0, cnt: 0 });
-    const body = rows.map(([k, o]) => {
-      const p = pvPick(o, st.side);
-      const rate = o.count ? p.n / o.count : null;
-      return '<tr>' + impCell(k) + impCell(fmtInt(o.count), { num: 1 }) + impCell(fmtInt(p.n), { num: 1 }) +
-        impCell(rate == null ? '-' : fmtPct(rate), { num: 1 }) + impCell(fmtYen(p.amt), { num: 1 }) +
-        impCell(p.n ? fmtYen(p.amt / p.n) : '-', { num: 1 }) + '</tr>';
-    }).join('') +
-      '<tr>' + impCell('合計', { bg: '#eef1f5', bold: 1 }) + impCell(fmtInt(tot.cnt), { num: 1, bg: '#eef1f5', bold: 1 }) +
-      impCell(fmtInt(tot.n), { num: 1, bg: '#eef1f5', bold: 1 }) +
-      impCell(tot.cnt ? fmtPct(tot.n / tot.cnt) : '-', { num: 1, bg: '#eef1f5', bold: 1 }) +
-      impCell(fmtYen(tot.amt), { num: 1, bg: '#eef1f5', bold: 1 }) +
-      impCell(tot.n ? fmtYen(tot.amt / tot.n) : '-', { num: 1, bg: '#eef1f5', bold: 1 }) + '</tr>';
-    return { html: impTable([{ name: dimName }, { name: '対象商品数', num: 1 }, { name: sideLabel + '件数', num: 1 },
-      { name: sideLabel + '比率', num: 1 }, { name: sideLabel + '金額', num: 1 }, { name: '1件あたり', num: 1 }], body), rows };
+    const tot = rows.reduce((a, [, o]) => ({
+      cnt: a.cnt + (o.count || 0), un: a.un + (o.upside_count || 0), ua: a.ua + (o.upside_amount || 0),
+      dn: a.dn + (o.downside_count || 0), da: a.da + (o.downside_amount || 0), v: a.v + (o.variance_sum || 0)
+    }), { cnt: 0, un: 0, ua: 0, dn: 0, da: 0, v: 0 });
+    const line = (k, o, opt) => {
+      const c = (v, sv) => impCell(v, { num: 1, bg: opt && opt.bg, bold: opt && opt.bold });
+      return '<tr' + (opt && opt.total ? ' data-total="1"' : '') + '>' +
+        impCell(k, { bg: opt && opt.bg, bold: opt && opt.bold }) +
+        c(fmtInt(o.count)) +
+        c(fmtInt(o.upside_count)) + c(o.count ? fmtPct(o.upside_count / o.count) : '-') + c(fmtYen(o.upside_amount)) +
+        c(fmtInt(o.downside_count)) + c(o.count ? fmtPct(o.downside_count / o.count) : '-') + c(fmtYen(o.downside_amount)) +
+        c(fmtYen(o.variance_sum)) + c(o.count ? fmtYen(o.variance_sum / o.count) : '-') + '</tr>';
+    };
+    const body = rows.map(([k, o]) => line(k, o)).join('') +
+      line('合計', { count: tot.cnt, upside_count: tot.un, upside_amount: tot.ua,
+                    downside_count: tot.dn, downside_amount: tot.da, variance_sum: tot.v },
+           { bg: '#eef1f5', bold: 1, total: 1 });
+    return { html: impTable([{ name: dimName }, { name: '対象商品数', num: 1 },
+      { name: '上振れ件数', num: 1 }, { name: '上振れ率', num: 1 }, { name: '上振れ金額', num: 1 },
+      { name: '下振れ件数', num: 1 }, { name: '下振れ率', num: 1 }, { name: '下振れ金額', num: 1 },
+      { name: '差引金額', num: 1 }, { name: '1件あたり差引', num: 1 }], body), rows };
   };
 
   // コンディション別
@@ -3304,7 +3325,7 @@ function renderPvBreakdowns() {
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { title: { display: true, text: 'コンディション別 上振れ/下振れ金額' },
         legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
-      scales: { y: { ticks: { callback: v => (v / 1000000) + 'M' } } } }
+      scales: { y: { ticks: { callback: v => moneyTick(v) } } } }
   });
 
   // 価格帯別
@@ -3324,12 +3345,13 @@ function renderPvBreakdowns() {
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { title: { display: true, text: '価格帯別 上振れ/下振れ金額' },
         legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
-      scales: { y: { ticks: { callback: v => (v / 1000000) + 'M' } } } }
+      scales: { y: { ticks: { callback: v => moneyTick(v) } } } }
   });
 
   // カテゴリ別(既存の profit_variance_rows を流用)
   const catList = agg(PROFIT_VARIANCE_ROWS, 'category');
   const catT = mkTable(catList, 'カテゴリ', (a, b) => Math.abs(pvPick(b[1], st.side).amt) - Math.abs(pvPick(a[1], st.side).amt));
+  // 「上振れのみ/下振れのみ」を選んだときは、その側の金額が大きい順に並べる
   const cte = document.getElementById('pvCatTable');
   if (cte) cte.innerHTML = catT.html;
 
@@ -4268,8 +4290,18 @@ document.getElementById('navBtnCustomer').addEventListener('click', () => setPag
 document.getElementById('segBtnSrRepeater').addEventListener('click', () => setCustomerSegment('sr_repeater'));
 document.getElementById('segBtnLoyalCustomer').addEventListener('click', () => setCustomerSegment('loyal_customer'));
 
-function renderAll() {
+// 初期表示は「月次 × データがある最新の月」に固定する。
+// ページを切り替えても、ユーザーが粒度・期間を変えるまではこの状態を保つ。
+function applyDefaultPeriod() {
+  granSel.value = 'month';
+  syncWeekStartVisibility();
+  const periods = availablePeriods('month');
   populatePeriodSelect();
+  if (periods.length) periodSel.value = periods[periods.length - 1].key;
+}
+
+function renderAll() {
+  applyDefaultPeriod();
   renderPageContent();
 }
 
