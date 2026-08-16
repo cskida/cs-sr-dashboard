@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import gzip
 import json
 import subprocess
@@ -84,6 +85,12 @@ def collect_21st(backend) -> dict:
         "profit_variance_rows": m.build_profit_variance_rows(detail),
         "category_profit_detail_rows": m.build_category_profit_detail_rows(detail),
         "deficit_rows": m.build_deficit_rows(weeks, detail, cost_master),
+        # ⑦赤字ページの「粗利損 / 最終利益」2軸集計。出荷点数の母数もここに入っているため、
+        # これを作り忘れると赤字率や出荷商品数が0で表示される。
+        "deficit_mode_rows": m.build_deficit_mode_rows(weeks, detail, cost_master),
+        # ⑥粗利差異ページの、コンディション別・価格帯別の上振れ/下振れ分解
+        "variance_condition_rows": m.build_variance_breakdown_rows(detail, "condition"),
+        "variance_band_rows": m.build_variance_breakdown_rows(detail, "price_band"),
         "data_through": m.compute_data_through(weeks),
     }
     for k, v in out.items():
@@ -99,6 +106,9 @@ def main():
     ap.add_argument("--local-dir", default="drive_cache", help="localモードで読むディレクトリ")
     ap.add_argument("--frozen", default="data_20th_frozen.json.gz")
     ap.add_argument("--output", default="cs_sr_dashboard_data.json")
+    ap.add_argument("--dump-21", default=None,
+                    help="21期だけを集計した結果をこのパスに書き出して終了する"
+                         "(freeze_20th.py の --live21 に渡して凍結データを作り直すときに使う)")
     args = ap.parse_args()
 
     if args.mode == "drive":
@@ -107,6 +117,11 @@ def main():
         backend = m.LocalCacheDriveBackend(args.local_dir, FY21_ROOT_ID)
 
     new = collect_21st(backend)
+
+    if args.dump_21:
+        Path(args.dump_21).write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
+        print(f"[INFO] 21期のみの集計を書き出しました: {args.dump_21}")
+        return
 
     frozen_path = Path(args.frozen)
     if not frozen_path.exists():
@@ -120,10 +135,21 @@ def main():
         "fiscal_year_start": m.FISCAL_YEAR_START,
         "data_through": new.pop("data_through"),
     }
-    for key in ["rows", "sr_major_rows", "cause_rows", "condition_rows", "price_band_rows",
-                "profit_variance_rows", "category_profit_detail_rows", "deficit_rows"]:
+    # 結合対象は固定リストにせず、21期側で作った配列すべてを対象にする。
+    # (固定リストにしていたため、あとから追加した deficit_mode_rows などが
+    #  自動更新版だけ丸ごと欠落し、⑦の出荷商品数が0になる不具合が起きた)
+    merge_keys = [k for k, v in new.items() if isinstance(v, list)]
+    for key in merge_keys:
         data[key] = (frozen.get(key) or []) + (new.get(key) or [])
         print(f"[INFO] {key}: 20期{len(frozen.get(key) or []):,} + 21期{len(new.get(key) or []):,} = {len(data[key]):,}行")
+
+    # 凍結ファイル側にしかない配列(顧客セグメント等)を取りこぼさないための確認。
+    # 期間で切り分けられない顧客系は下でそのまま引き継ぐので、それ以外が出たら警告する。
+    carry_over = {"customer_segment_rows", "customer_detail_rows"}
+    for key, val in frozen.items():
+        if isinstance(val, list) and key not in data and key not in carry_over:
+            print(f"[WARN] 凍結データにある「{key}」が21期側で作られていません。"
+                  f"update_dashboard.py の collect_21st に追加してください。")
 
     # ⑧顧客セグメントは全期間の名寄せが必要で21期だけでは作れないため、凍結データがあれば
     # そのまま引き継ぐ(無ければ空。ページ自体は空表示になるだけで他ページには影響しない)。
@@ -131,8 +157,17 @@ def main():
     data["customer_detail_rows"] = frozen.get("customer_detail_rows") or []
 
     data["insights"] = auto_insights.build_insights(data)
-    Path(args.output).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # indent付きだと数百MBの文字列をメモリ上に作ることになり、メモリ不足で落ちることがある。
+    # 人が読むファイルではないので、区切り最小の形式でファイルへ直接書き出す。
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
     print(f"[INFO] 出力完了: {args.output} (data_through={data['data_through']})", flush=True)
+
+    # build_dashboard.py は同じJSONをもう一度読み込むため、ここで手元のデータを解放しておく
+    # (解放しないとメモリを2重に使い、非力な環境では強制終了されることがある)
+    data.clear(); frozen.clear(); new.clear()
+    del data, frozen, new
+    gc.collect()
 
     subprocess.run([sys.executable, "build_dashboard.py"], check=True)
     html = Path("cs_sr_dashboard.html")

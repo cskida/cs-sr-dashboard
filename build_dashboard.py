@@ -845,6 +845,26 @@ html = r'''<!DOCTYPE html>
     <div id="detailTableDeficitProc" class="detail-table"></div>
   </div>
 
+  <!-- カテゴリ × 仕入れ方法 のクロス集計。どのカテゴリをどの仕入れ経路で
+       取ったときに赤字になりやすいかを1枚で見るための表。 -->
+  <h2>カテゴリ × 仕入れ方法 クロス集計 <span id="deficitCrossPeriodLabel" class="badge"></span></h2>
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>表示する指標</label>
+      <select id="deficitCrossMetric">
+        <option value="rate" selected>赤字率(赤字点数÷出荷点数)</option>
+        <option value="count">赤字点数</option>
+        <option value="amount">赤字額合計(円)</option>
+        <option value="per_ship">出荷1点あたり赤字額(円)</option>
+        <option value="shipped">出荷点数</option>
+      </select>
+    </div>
+  </div>
+  <div class="card table-section">
+    <div id="deficitCrossTable" style="overflow-x:auto;"></div>
+    <p class="note">上部の「損益の見方」(粗利損／最終利益)と、拠点・カテゴリ・期間の絞り込みがそのまま反映されます。色が濃いほど値が大きい(＝悪い)ことを示します。セルにマウスを乗せると出荷点数・赤字点数・赤字額が表示されます。出荷点数の多い順に上位15カテゴリを表示しています。</p>
+  </div>
+
   <div class="card insight-box" style="background:#fff8ec;border-color:#f0dfb8;">
     <h3 style="color:#7a5b1e;">この表に入っていない「人の手間」のコスト</h3>
     <div class="insight-text" style="color:#4a3c1e;">
@@ -3648,6 +3668,98 @@ function renderDeficitModeSummary() {
   ].join('');
 }
 
+// ⑦: カテゴリ × 仕入れ方法 のクロス集計表。
+// deficit_mode_rows は「週×拠点×カテゴリ×仕入れ方法」で出荷点数と赤字点数・赤字額を
+// 持っているため、この1つのデータだけで出荷母数まで含めたクロス集計が作れる。
+function renderDeficitCrossTab() {
+  const wrap = document.getElementById('deficitCrossTable');
+  if (!wrap || typeof DEFICIT_MODE_ROWS === 'undefined') return;
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const lbl = document.getElementById('deficitCrossPeriodLabel');
+  if (lbl) lbl.textContent = currentPeriodLabel();
+  const { rowFilter } = deficitFilterState();
+  const isFin = ((document.getElementById('deficitMode') || {}).value || 'fin') === 'fin';
+  const cntField = isFin ? 'fin_deficit_count' : 'acc_deficit_count';
+  const amtField = isFin ? 'fin_deficit_amount' : 'acc_deficit_amount';
+
+  const rows = DEFICIT_MODE_ROWS.filter(r =>
+    (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
+    (!rowFilter || rowFilter(r)));
+  if (!rows.length) { wrap.innerHTML = '<p class="note">選択条件に合うデータがありません。</p>'; return; }
+
+  const cell = new Map(), catShip = new Map(), procShip = new Map();
+  const blank = () => ({ ship: 0, cnt: 0, amt: 0 });
+  const bump = (map, key, r) => {
+    if (!map.has(key)) map.set(key, blank());
+    const o = map.get(key);
+    o.ship += r.shipped_count || 0; o.cnt += r[cntField] || 0; o.amt += r[amtField] || 0;
+  };
+  rows.forEach(r => {
+    bump(cell, r.category + '||' + r.procurement_type, r);
+    bump(catShip, r.category, r);
+    bump(procShip, r.procurement_type, r);
+  });
+
+  const cats = Array.from(catShip.keys()).filter(c => catShip.get(c).ship > 0)
+    .sort((a, b) => catShip.get(b).ship - catShip.get(a).ship).slice(0, 15);
+  const procs = Array.from(procShip.keys()).filter(p => procShip.get(p).ship > 0)
+    .sort((a, b) => procShip.get(b).ship - procShip.get(a).ship);
+  if (!cats.length || !procs.length) { wrap.innerHTML = '<p class="note">選択条件に合うデータがありません。</p>'; return; }
+
+  const metric = (document.getElementById('deficitCrossMetric') || {}).value || 'rate';
+  const valueOf = (o) => {
+    if (!o) return null;
+    if (metric === 'count') return o.cnt;
+    if (metric === 'amount') return o.amt;
+    if (metric === 'shipped') return o.ship;
+    if (metric === 'per_ship') return o.ship ? o.amt / o.ship : null;
+    return o.ship ? o.cnt / o.ship : null;   // rate
+  };
+  const fmtVal = (v) => {
+    if (v === null || v === undefined) return '-';
+    if (metric === 'rate') return fmtPct(v);
+    if (metric === 'amount' || metric === 'per_ship') return fmtYen(v);
+    return fmtInt(v);
+  };
+  // 色の濃さはセル値の最大値で正規化する(指標ごとにスケールが違うため)
+  let maxV = 0;
+  cats.forEach(c => procs.forEach(p => {
+    const v = valueOf(cell.get(c + '||' + p));
+    if (v != null && v > maxV) maxV = v;
+  }));
+  const bg = (v) => {
+    if (v == null || !(maxV > 0) || !(v > 0)) return '#f5f6f8';
+    return 'rgba(224,101,58,' + (0.06 + 0.44 * Math.min(1, v / maxV)).toFixed(3) + ')';
+  };
+  const th = 'padding:6px 10px;border:1px solid #e3e5e8;background:#f5f6f8;white-space:nowrap;';
+  const td = 'padding:6px 10px;border:1px solid #e3e5e8;text-align:right;white-space:nowrap;';
+
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr>' +
+    '<th style="' + th + 'text-align:left;">カテゴリ＼仕入れ方法</th>';
+  procs.forEach(p => { html += '<th style="' + th + '">' + p + '</th>'; });
+  html += '<th style="' + th + '">合計</th></tr></thead><tbody>';
+  const rowHtml = (label, getter, bold) => {
+    let s = '<tr><td style="padding:6px 10px;border:1px solid #e3e5e8;white-space:nowrap;'
+      + (bold ? 'font-weight:700;background:#f5f6f8;' : 'font-weight:600;') + '">' + label + '</td>';
+    procs.concat(['__TOTAL__']).forEach(p => {
+      const o = getter(p), v = valueOf(o);
+      const tip = o ? '出荷' + fmtInt(o.ship) + '点 / 赤字' + fmtInt(o.cnt) + '点 / ' + fmtYen(o.amt) : '';
+      s += '<td style="' + td + 'background:' + (bold ? '#f5f6f8' : bg(v)) + ';" title="' + tip + '">' + fmtVal(v) + '</td>';
+    });
+    return s + '</tr>';
+  };
+  const sumOf = (keys, getter) => keys.reduce((a, k) => {
+    const o = getter(k); if (o) { a.ship += o.ship; a.cnt += o.cnt; a.amt += o.amt; } return a;
+  }, blank());
+  cats.forEach(c => {
+    html += rowHtml(c, p => (p === '__TOTAL__' ? sumOf(procs, q => cell.get(c + '||' + q)) : cell.get(c + '||' + p)), false);
+  });
+  html += rowHtml('合計(表示中カテゴリ)',
+    p => (p === '__TOTAL__' ? sumOf(cats, c => sumOf(procs, q => cell.get(c + '||' + q)))
+                            : sumOf(cats, c => cell.get(c + '||' + p))), true);
+  wrap.innerHTML = html + '</tbody></table>';
+}
+
 function renderDeficitPage() {
   renderDeficitModeSummary();
   renderDeficitInsight();
@@ -3655,6 +3767,7 @@ function renderDeficitPage() {
   renderDeficitTrend();
   renderDeficitCategorySection();
   renderDeficitProcSection();
+  renderDeficitCrossTab();
 }
 
 // ---------- ⑨ SRリピーター・ロイヤルカスタマー分析ページ ----------
@@ -4476,6 +4589,9 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 {
   const dm = document.getElementById('deficitMode');
   if (dm) dm.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
+  // クロス集計の指標切替は、その表だけを描き直せばよい
+  const dx = document.getElementById('deficitCrossMetric');
+  if (dx) dx.addEventListener('change', () => { if (currentPage === 'deficit') renderDeficitCrossTab(); });
 }
 
 document.getElementById('subHeader').textContent =
