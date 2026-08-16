@@ -804,8 +804,8 @@ html = r'''<!DOCTYPE html>
     <div class="ctl">
       <label>損益の見方</label>
       <select id="deficitMode">
-        <option value="acc">会計上の粗利(落札価格-買取価格/1.1)</option>
-        <option value="fin" selected>最終利益(粗利-送料/1.1-返送料/1.1)</option>
+        <option value="acc">粗利損(落札価格-買取価格/1.1)</option>
+        <option value="fin" selected>最終利益(粗利-返送料/1.1)</option>
       </select>
     </div>
   </div>
@@ -860,9 +860,11 @@ html = r'''<!DOCTYPE html>
     </div>
   </div>
 
-  <p class="note" id="deficitNote">損益の2つの見方: <b>会計上の粗利</b>＝落札価格-買取価格/1.1（仕入と売価の差だけを見る経理的な粗利）。<b>最終利益</b>＝会計上の粗利-発送送料/1.1（-返品ありの場合はさらに返送料/1.1）。上部のセレクタで切り替えられます。<br>
-  ・返品→再出品→再販が同じ期間内に起きた場合、落札価格は<b>最終的に売れた価格</b>を採用し、送料は<b>最終の発送1回分</b>のみを計上します（発送時の送料はお客様負担で、受け取った送料をそのまま配送業者に支払うため当社の持ち出しにならないという運用実態に合わせています。厳密には契約送料との差額が利益になりますが、ここでは利益として考慮していません）。<br>
-  ・例）買取10,000円・最終落札13,000円・送料2,440円(税込)の場合 → 会計上の粗利=13,000-9,091=3,909円 / 最終利益=3,909-2,218=1,691円<br>
+  <p class="note" id="deficitNote">損益の2つの見方: <b>粗利損</b>＝落札価格-買取価格/1.1 がマイナスになったもの（仕入と売価の差だけを見る）。<b>最終利益</b>＝粗利-返送料/1.1 がマイナスになったもの（返品時の返送料は当社負担のため差し引く）。上部のセレクタで切り替えられます。<br>
+  ・<b>発送時の送料は差し引いていません</b>。お客様からお預かりした送料をそのまま配送業者に支払うため当社の持ち出しにならず、返品時もお客様に返金されるためです（厳密には契約送料との差額が利益になりますが、ここでは利益として考慮していません）。<br>
+  ・返品→再出品→再販が同じ期間内に起きた場合、落札価格は<b>最終的に売れた価格</b>を採用します。<br>
+  ・例）買取10,000円・最終落札13,000円の場合 → 粗利損の判定=13,000-9,091=3,909円（プラスなので赤字ではない）。返品が発生していれば、さらに返送料(税抜)を差し引いた額で判定します。<br>
+  ・<b>赤字率</b>＝赤字商品数 ÷ 出荷商品数。全体のうちどれくらいが赤字なのかを表します。<br>
   <br>
   赤字(原価割れ)の定義: 実質粗利(落札価格-買取価格/1.1-発送送料) が0未満の商品。加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の返送料(ヤフオク配送料)も赤字額に加算しています(total_deficit=正の値ほど赤字が大きいことを表します)。対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。発送送料は「ヤフオク配送料」列を基準に、数値ならそのまま採用、"らくらく家財便"の場合は受注_通常_出荷の実際の送料を突合して採用、"直引"の場合は0円としています。<br>
   上部の拠点セレクタ(「全拠点」または1拠点)と、このページのカテゴリ複数選択で対象を絞り込めます。カテゴリは何も選択しない状態が「全カテゴリ」、複数選択した場合はその合算です。絞り込みはこのページの全セクション(KPI・カテゴリ別比較・推移・仕入れ方法別比較)に同じ条件で反映されます。</p>
@@ -1390,6 +1392,10 @@ function renderDetailPage() {
 const deficitCategories = Array.from(new Set(DEFICIT_ROWS.map(r => r.category))).sort();
 const deficitCatMultiSel = document.getElementById('deficitCatMultiSelect');
 if (deficitCatMultiSel) {
+  const allOpt = document.createElement('option');
+  allOpt.value = ALL_CAT; allOpt.textContent = '(全カテゴリ)';
+  deficitCatMultiSel.appendChild(allOpt);
+  allOpt.selected = true;
   deficitCategories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; deficitCatMultiSel.appendChild(o); });
 }
 
@@ -3437,15 +3443,42 @@ function deficitDerive(o) {
 function DEFICIT_COLUMNS(nameLabel) {
   return [
     { name: nameLabel },
+    { name: '出荷商品数', formatter: c => fmtInt(c) },
     { name: '赤字商品数', formatter: c => fmtInt(c) },
+    { name: '赤字率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
     { name: '赤字額合計(円)', formatter: c => fmtYen(c) },
     { name: '1品あたり赤字額(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) },
-    { name: '発送送料合計(円)', formatter: c => fmtYen(c) },
+    { name: '出荷1点あたり赤字額(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) },
     { name: 'SR返品送料合計(円)', formatter: c => fmtYen(c) }
   ];
 }
 function deficitRow(d) {
-  return [d.name, d.count, d.total_deficit, d.avg_deficit_per_item, d.shipping_fee_total, d.return_shipping_total];
+  return [d.name, d.shipped_count, d.count, d.deficit_rate, d.total_deficit,
+          d.avg_deficit_per_item, d.deficit_per_shipped, d.return_shipping_total];
+}
+
+// 出荷商品数(deficit_mode_rows 由来)を次元別に引くための索引を作る。
+// 赤字件数だけでは母数が分からないため、出荷数と赤字率を併記できるようにする。
+function buildShippedIndex(dim, granularity, periodKey, rowFilter) {
+  const map = new Map();
+  if (typeof DEFICIT_MODE_ROWS === 'undefined') return map;
+  DEFICIT_MODE_ROWS.forEach(r => {
+    if (periodKey !== '__ALL__' && periodKeyFor(r, granularity).key !== periodKey) return;
+    if (rowFilter && !rowFilter(r)) return;
+    map.set(r[dim], (map.get(r[dim]) || 0) + (r.shipped_count || 0));
+  });
+  return map;
+}
+
+function attachShipped(data, shippedMap) {
+  return data.map(d => {
+    const ship = shippedMap.get(d.name) || 0;
+    return Object.assign({}, d, {
+      shipped_count: ship,
+      deficit_rate: ship ? d.count / ship : null,
+      deficit_per_shipped: ship ? d.total_deficit / ship : null
+    });
+  });
 }
 
 // E項目: ⑧赤字ページの絞り込み条件(拠点・カテゴリ)を1か所で組み立てる。
@@ -3455,8 +3488,10 @@ function deficitRow(d) {
 function deficitFilterState() {
   const loc = locSel.value || ALL_LOC;
   const isAllLoc = (loc === ALL_LOC);
-  const selectedCats = deficitCatMultiSel ? getMultiSelectValues(deficitCatMultiSel) : [];
-  const isAllCats = selectedCats.length === 0;
+  let selectedCats = deficitCatMultiSel ? getMultiSelectValues(deficitCatMultiSel) : [];
+  // 「(全カテゴリ)」または未選択なら全カテゴリ扱い
+  const isAllCats = selectedCats.length === 0 || selectedCats.includes(ALL_CAT);
+  if (isAllCats) selectedCats = [];
   const catSet = new Set(selectedCats);
   const rowFilter = (isAllLoc && isAllCats)
     ? null
@@ -3492,6 +3527,7 @@ function renderDeficitCategorySection() {
   document.getElementById('deficitCatPeriodLabel').textContent = currentPeriodLabel();
   const { rowFilter } = deficitFilterState();
   let data = buildDimBreakdownGeneric(DEFICIT_ROWS, 'category', DEFICIT_FIELDS, granularity, periodKey, rowFilter).map(deficitDerive);
+  data = attachShipped(data, buildShippedIndex('category', granularity, periodKey, rowFilter));
   data.sort((a, b) => b.total_deficit - a.total_deficit);
   renderChart('deficitCatChart', dualAxisMoneyRightConfig(
     data.map(d => d.name), data.map(d => d.count), data.map(d => d.total_deficit), '赤字商品数', '赤字額合計', '件数'
@@ -3504,6 +3540,7 @@ function renderDeficitProcSection() {
   document.getElementById('deficitProcPeriodLabel').textContent = currentPeriodLabel();
   const { rowFilter } = deficitFilterState();
   let data = buildDimBreakdownGeneric(DEFICIT_ROWS, 'procurement_type', DEFICIT_FIELDS, granularity, periodKey, rowFilter).map(deficitDerive);
+  data = attachShipped(data, buildShippedIndex('procurement_type', granularity, periodKey, rowFilter));
   data.sort((a, b) => b.total_deficit - a.total_deficit);
   renderChart('deficitProcChart', dualAxisMoneyRightConfig(
     data.map(d => d.name), data.map(d => d.count), data.map(d => d.total_deficit), '赤字商品数', '赤字額合計', '件数'
@@ -3535,7 +3572,8 @@ function renderDeficitInsight() {
   const granularity = granSel.value, periodKey = periodSel.value;
   const loc = locSel.value, useLoc = loc && loc !== ALL_LOC;
   const cats = deficitCatMultiSel ? getMultiSelectValues(deficitCatMultiSel) : [];
-  const catSet = cats.length ? new Set(cats) : null;
+  // 「(全カテゴリ)」を選んでいる場合は絞り込まない
+  const catSet = (cats.length && !cats.includes(ALL_CAT)) ? new Set(cats) : null;
   const rows = DEFICIT_ROWS.filter(r =>
     (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
     (!useLoc || r.location === loc) && (!catSet || catSet.has(r.category)));
@@ -3555,7 +3593,13 @@ function renderDeficitInsight() {
   if (!cnt) { el.textContent = '対象データがありません。'; return; }
   const top = (map) => Array.from(map.entries()).sort((a, b) => b[1].amt - a[1].amt);
   const lines = [];
-  lines.push('全体: 赤字(原価割れ)商品は' + fmtInt(cnt) + '点、赤字額の合計は' + fmtYen(total) + '(1点あたり平均' + fmtYen(total / cnt) + ')。');
+  const shippedTotal = Array.from(buildShippedIndex('category', granularity, periodKey,
+    r => (!useLoc || r.location === loc) && (!catSet || catSet.has(r.category))).values())
+    .reduce((a, v) => a + v, 0);
+  lines.push('全体: 出荷' + fmtInt(shippedTotal) + '点のうち赤字(原価割れ)は' + fmtInt(cnt) + '点で、' +
+    (shippedTotal ? '赤字率は' + fmtPct(cnt / shippedTotal) + '。' : '') +
+    '赤字額の合計は' + fmtYen(total) + '(赤字1点あたり平均' + fmtYen(total / cnt) +
+    (shippedTotal ? '、出荷1点あたり' + fmtYen(total / shippedTotal) : '') + ')。');
   const tc = top(byCat)[0], tl = top(byLoc)[0], tp = top(byProc)[0];
   if (tc) lines.push('カテゴリ別では「' + tc[0] + '」が最大で' + fmtYen(tc[1].amt) + '(' + fmtInt(tc[1].cnt) + '点、平均' + fmtYen(tc[1].amt / tc[1].cnt) + ')。全体の' + (total ? (tc[1].amt / total * 100).toFixed(1) : '-') + '%を占めます。');
   if (tl && !useLoc) lines.push('拠点別では「' + tl[0] + '」が最大で' + fmtYen(tl[1].amt) + '(' + fmtInt(tl[1].cnt) + '点)。買取査定の基準確認が有効です。');
@@ -3572,7 +3616,7 @@ function renderDeficitModeSummary() {
   const granularity = granSel.value, periodKey = periodSel.value;
   const loc = locSel.value, useLoc = loc && loc !== ALL_LOC;
   const cats = deficitCatMultiSel ? getMultiSelectValues(deficitCatMultiSel) : [];
-  const catSet = cats.length ? new Set(cats) : null;
+  const catSet = (cats.length && !cats.includes(ALL_CAT)) ? new Set(cats) : null;
   const rows = DEFICIT_MODE_ROWS.filter(r =>
     (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
     (!useLoc || r.location === loc) && (!catSet || catSet.has(r.category)));
@@ -3584,19 +3628,23 @@ function renderDeficitModeSummary() {
   }, {});
   const mode = (document.getElementById('deficitMode') || {}).value || 'fin';
   const isFin = mode === 'fin';
+  const cnt = isFin ? t.fin_deficit_count : t.acc_deficit_count;
+  const amt = isFin ? t.fin_deficit_amount : t.acc_deficit_amount;
+  const modeName = isFin ? '最終利益' : '粗利損';
+  const ship = t.shipped_count || 0;
   el.innerHTML = [
-    metricSimpleCardHtml('出荷商品数', fmtInt(t.shipped_count) + '点'),
-    metricSimpleCardHtml('会計上の粗利(合計)', fmtYen(t.acc_profit_sum)),
-    metricSimpleCardHtml('会計上の赤字', fmtInt(t.acc_deficit_count) + '点 / ' + fmtYen(t.acc_deficit_amount)),
-    metricSimpleCardHtml('最終利益(合計)', fmtYen(t.fin_profit_sum)),
-    metricSimpleCardHtml('最終利益ベースの赤字', fmtInt(t.fin_deficit_count) + '点 / ' + fmtYen(t.fin_deficit_amount)),
-    metricSimpleCardHtml('差(送料+返送料)', fmtYen((t.shipping_fee_total || 0) + (t.return_shipping_total || 0))),
-    metricSimpleCardHtml('赤字率(' + (isFin ? '最終利益' : '会計上') + ')',
-      t.shipped_count ? fmtPct((isFin ? t.fin_deficit_count : t.acc_deficit_count) / t.shipped_count) : '-'),
-    metricSimpleCardHtml('1点あたり赤字(' + (isFin ? '最終利益' : '会計上') + ')',
-      (isFin ? t.fin_deficit_count : t.acc_deficit_count)
-        ? fmtYen((isFin ? t.fin_deficit_amount : t.acc_deficit_amount) / (isFin ? t.fin_deficit_count : t.acc_deficit_count))
-        : '-')
+    metricSimpleCardHtml('出荷商品数', fmtInt(ship) + '点'),
+    metricSimpleCardHtml(modeName + 'ベースの赤字点数', fmtInt(cnt) + '点'),
+    metricSimpleCardHtml('赤字率(赤字点数÷出荷点数)', ship ? fmtPct(cnt / ship) : '-'),
+    metricSimpleCardHtml('赤字額(合計)', fmtYen(amt)),
+    metricSimpleCardHtml('1点あたり赤字', cnt ? fmtYen(amt / cnt) : '-'),
+    metricSimpleCardHtml('赤字額÷出荷点数', ship ? fmtYen(amt / ship) : '-'),
+    metricSimpleCardHtml('粗利損: 点数 / 率', fmtInt(t.acc_deficit_count) + '点 / ' +
+      (ship ? fmtPct(t.acc_deficit_count / ship) : '-')),
+    metricSimpleCardHtml('最終利益: 点数 / 率', fmtInt(t.fin_deficit_count) + '点 / ' +
+      (ship ? fmtPct(t.fin_deficit_count / ship) : '-')),
+    metricSimpleCardHtml('返送料(合計)', fmtYen(t.return_shipping_total)),
+    metricSimpleCardHtml('利益合計(' + modeName + ')', fmtYen(isFin ? t.fin_profit_sum : t.acc_profit_sum))
   ].join('');
 }
 

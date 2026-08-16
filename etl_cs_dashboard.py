@@ -2190,8 +2190,11 @@ def aggregate_deficit_modes(
 
     ① 会計上の粗利  = 落札価格 - 買取価格/1.1
          仕入と売価の差だけを見る、経理的な粗利。送料や返送料は含めない。
-    ② 最終利益      = 落札価格 - 買取価格/1.1 - 発送送料/1.1 (- 返品ありなら返送料/1.1)
-         実際に手元に残る利益。
+    ② 最終利益      = 落札価格 - 買取価格/1.1 (- 返品ありなら返送料/1.1)
+         実際に手元に残る利益。発送時の送料はお客様からお預かりした額をそのまま
+         配送業者に支払うため当社の持ち出しにならず、差し引かない
+         (厳密には契約送料との差額が利益になるが、ここでは利益として考慮しない)。
+         返品時の返送料は当社負担になるため差し引く。
 
     【返品→再出品→再販が同一期間内に起きた場合】
       商品_出荷(JPONベース)は同じ商品IDが再出現するため concat_and_dedup で
@@ -2202,8 +2205,9 @@ def aggregate_deficit_modes(
        ここでは利益として考慮しない)。
 
       例) 買取10,000円・最終落札13,000円・送料2,440円(税込)の場合
-          会計上の粗利 = 13,000 - 9,091 = 3,909円
-          最終利益     = 13,000 - 9,091 - 2,218 = 1,691円
+          粗利損の判定 = 13,000 - 9,091 = 3,909円 (プラスなので粗利損ではない)
+          最終利益     = 13,000 - 9,091 = 3,909円 (返品なしなら発送送料は引かない)
+          返品があった場合のみ、返送料(税抜)をさらに差し引く
     """
     if detail.empty:
         return pd.DataFrame()
@@ -2220,7 +2224,7 @@ def aggregate_deficit_modes(
     # actual_profit は既に 落札価格 - 買取価格/1.1 (税抜)
     d["accounting_profit"] = d["actual_profit"]
     # shipping_fee は build_shukka_detail 時点で税抜換算済み
-    d["final_profit_item"] = d["actual_profit"] - d["shipping_fee"] - d["return_shipping_amount"]
+    d["final_profit_item"] = d["actual_profit"] - d["return_shipping_amount"]
     return d
 
 
@@ -2281,7 +2285,8 @@ def aggregate_deficit(
 ) -> pd.DataFrame:
     """赤字(原価割れ)商品を週×カテゴリ×procurement_type(仕入れ方法)で集計する。
 
-    赤字の定義: 実質粗利(actual_profit - shipping_fee) が0未満の商品(発送送料も加味)。
+    赤字の定義: 最終利益(actual_profit - 返品時の返送料/1.1) が0未満の商品。
+    発送時の送料はお客様負担で当社の持ち出しにならないため差し引かない。
     加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の
     返送料(cost_masterのヤフオク配送料)も追加で赤字額に加算する
     (aggregate_refund の返送料ロジックを参考に、赤字商品側にも同じ基準で反映する)。
@@ -2293,7 +2298,8 @@ def aggregate_deficit(
         return pd.DataFrame(columns=DEFICIT_COLUMNS)
 
     d = detail.copy()
-    d["net_profit"] = d["actual_profit"] - d["shipping_fee"]
+    # 発送送料は差し引かない(お客様負担のため)。返送料のみ後段で加算する。
+    d["net_profit"] = d["actual_profit"]
     deficit = d[d["net_profit"] < 0].copy()
     if deficit.empty:
         return pd.DataFrame(columns=DEFICIT_COLUMNS)
