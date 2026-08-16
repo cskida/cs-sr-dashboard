@@ -180,6 +180,11 @@ def run_stage(stage: str):
         save("condition_rows", cond)
         save("price_band_rows", pb)
         save("profit_variance_rows", pv)
+        vc = m.build_variance_breakdown_rows(detail, "condition")
+        vb = m.build_variance_breakdown_rows(detail, "price_band")
+        print(f"  粗利差異の分解: コンディション別{len(vc):,}行 / 価格帯別{len(vb):,}行", flush=True)
+        save("variance_condition_rows", vc)
+        save("variance_band_rows", vb)
 
     elif stage == "category_profit_deficit":
         weeks = load("weeks")
@@ -263,6 +268,8 @@ def run_stage(stage: str):
         condition_rows = load("condition_rows")
         price_band_rows = load("price_band_rows")
         profit_variance_rows = load("profit_variance_rows")
+        variance_condition_rows = load("variance_condition_rows") if has("variance_condition_rows") else []
+        variance_band_rows = load("variance_band_rows") if has("variance_band_rows") else []
         category_profit_detail_rows = load("category_profit_detail_rows")
         deficit_rows = load("deficit_rows")
         customer_segment_rows = load("customer_segment_rows") if has("customer_segment_rows") else []
@@ -316,6 +323,8 @@ def run_stage(stage: str):
             "condition_rows": condition_rows,
             "price_band_rows": price_band_rows,
             "profit_variance_rows": profit_variance_rows,
+            "variance_condition_rows": variance_condition_rows,
+            "variance_band_rows": variance_band_rows,
             "category_profit_detail_rows": category_profit_detail_rows,
             "deficit_rows": deficit_rows,
             "customer_segment_rows": customer_segment_rows,

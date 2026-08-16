@@ -1799,6 +1799,66 @@ def aggregate_profit_variance(detail: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def aggregate_variance_breakdown(detail: pd.DataFrame, dim: str) -> pd.DataFrame:
+    """粗利差異を「コンディション別」「価格帯別」に分解する(⑥粗利差異ページ用)。
+
+    上振れ(見込みより高く売れた)と下振れ(安く売れた)を分けて件数・金額を持たせ、
+    どの状態・価格帯で値付けが外れているかを特定できるようにする。
+    dim には "condition" または "price_band" を指定する。
+    """
+    base = ["week_start", "week_end", "year_month", "location", "category"]
+    keys = base + ([dim, "price_band_sort"] if dim == "price_band" else [dim])
+    cols = keys + ["count", "expected_profit_sum", "actual_profit_sum", "variance_sum",
+                   "upside_count", "upside_amount", "downside_count", "downside_amount"]
+    if detail.empty or dim not in detail.columns:
+        return pd.DataFrame(columns=cols)
+    d = detail.copy()
+    d["is_upside"] = d["variance"] > 0
+    d["is_downside"] = d["variance"] < 0
+    d["upside_amount"] = d["variance"].where(d["is_upside"], 0.0)
+    d["downside_amount"] = d["variance"].where(d["is_downside"], 0.0)
+    grouped = (
+        d.groupby(keys)
+        .agg(
+            count=("variance", "size"),
+            expected_profit_sum=("expected_profit", "sum"),
+            actual_profit_sum=("actual_profit", "sum"),
+            variance_sum=("variance", "sum"),
+            upside_count=("is_upside", "sum"),
+            upside_amount=("upside_amount", "sum"),
+            downside_count=("is_downside", "sum"),
+            downside_amount=("downside_amount", "sum"),
+        )
+        .reset_index()
+    )
+    return grouped[cols]
+
+
+def build_variance_breakdown_rows(detail: pd.DataFrame, dim: str) -> list[dict]:
+    df = aggregate_variance_breakdown(detail, dim)
+    if df.empty:
+        return []
+    out = []
+    for _, r in df.iterrows():
+        rec = {
+            "week_start": r["week_start"], "week_end": r["week_end"], "year_month": r["year_month"],
+            "location": r["location"], "category": r["category"],
+            "count": int(r["count"]),
+            "expected_profit_sum": _safe_float(r["expected_profit_sum"]),
+            "actual_profit_sum": _safe_float(r["actual_profit_sum"]),
+            "variance_sum": _safe_float(r["variance_sum"]),
+            "upside_count": int(r["upside_count"]), "upside_amount": _safe_float(r["upside_amount"]),
+            "downside_count": int(r["downside_count"]), "downside_amount": _safe_float(r["downside_amount"]),
+        }
+        if dim == "price_band":
+            rec["price_band"] = r["price_band"]
+            rec["price_band_sort"] = int(r["price_band_sort"])
+        else:
+            rec["condition"] = r["condition"]
+        out.append(rec)
+    return out
+
+
 CATEGORY_PROFIT_DETAIL_COLUMNS = [
     "week_start", "week_end", "year_month", "category",
     "count", "cost_amount", "sales_amount", "gross_profit", "variance_amount",

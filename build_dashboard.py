@@ -716,6 +716,21 @@ html = r'''<!DOCTYPE html>
 
   <div class="kpi-grid" id="pvKpiGrid"></div>
 
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>上振れ / 下振れ</label>
+      <select id="pvSide">
+        <option value="both">両方(差引)</option>
+        <option value="up">上振れのみ</option>
+        <option value="down">下振れのみ</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>&nbsp;</label>
+      <span class="note" style="margin:0;">拠点は上部の「拠点」から選択します(「全拠点」も選べます)。</span>
+    </div>
+  </div>
+
   <div class="card insight-box" id="pvInsightBox">
     <h3>粗利差異の所見(自動生成)</h3>
     <div class="insight-meta" id="pvInsightMeta"></div>
@@ -724,6 +739,15 @@ html = r'''<!DOCTYPE html>
 
   <h2>推移(全社合計)</h2>
   <div class="card chart-card" style="height:300px;"><canvas id="pvTrendChart"></canvas></div>
+
+  <h2>コンディション別・価格帯別の粗利差異 <span id="pvBreakPeriodLabel" class="badge"></span></h2>
+  <div class="mini-charts-grid">
+    <div class="card mini-chart-card"><canvas id="pvCondChart"></canvas></div>
+    <div class="card mini-chart-card"><canvas id="pvBandChart"></canvas></div>
+  </div>
+  <div class="card table-section"><h3>コンディション別</h3><div id="pvCondTable"></div></div>
+  <div class="card table-section"><h3>価格帯別</h3><div id="pvBandTable"></div></div>
+  <div class="card table-section"><h3>カテゴリ別</h3><div id="pvCatTable"></div></div>
 
   <h2>拠点別 粗利差異(件数・額) <span id="pvLocPeriodLabel" class="badge"></span></h2>
   <div class="card chart-card" style="height:300px;"><canvas id="pvLocChart"></canvas></div>
@@ -1111,6 +1135,9 @@ const PRICE_BAND_ROWS = rehydrateRows(DATA.price_band_rows);
 const PROFIT_VARIANCE_ROWS = rehydrateRows(DATA.profit_variance_rows);
 const CATEGORY_PROFIT_DETAIL_ROWS = rehydrateRows(DATA.category_profit_detail_rows);
 const DEFICIT_ROWS = rehydrateRows(DATA.deficit_rows);
+// ⑥粗利差異ページ: コンディション別・価格帯別に上振れ/下振れを分解した行
+const VARIANCE_CONDITION_ROWS = rehydrateRows(DATA.variance_condition_rows);
+const VARIANCE_BAND_ROWS = rehydrateRows(DATA.variance_band_rows);
 // ⑨ SRリピーター・ロイヤルカスタマー分析。1行=1顧客(名寄せ済みクラスタ)で、
 // segment 列が 'sr_repeater' / 'loyal_customer' のどちらのセグメントかを表す。
 // 匿名ラベルと数値指標のみで、氏名・住所・電話番号等の個人情報は含まれない。
@@ -3074,17 +3101,25 @@ function cpdComboConfig(labels, barSpecs, lineSpecs) {
 }
 
 function renderCpdTrendSection() {
-  // 月次のときは決算月×期の昨対比較(選択カテゴリ合計の粗利差異)にする
-  if (isYoyMode() && typeof CATEGORY_PROFIT_DETAIL_ROWS !== 'undefined') {
-    const selCats = cpdCatMultiSel ? getMultiSelectValues(cpdCatMultiSel) : [];
+  // 月次のときは、この節の各グラフも決算月×期の昨対比較にする(他のグラフは通常どおり描く)
+  if (isYoyMode() && typeof CATEGORY_PROFIT_DETAIL_ROWS !== 'undefined' && cpdCatMultiSel) {
+    const selCats = getMultiSelectValues(cpdCatMultiSel);
     const catSet = selCats.length ? new Set(selCats) : null;
     const ser = buildYoyGeneric(CATEGORY_PROFIT_DETAIL_ROWS,
-      ['count', 'sales_amount', 'gross_profit', 'variance_amount'],
+      ['count', 'sales_amount', 'gross_profit', 'variance_amount', 'cost_amount'],
       r => !catSet || catSet.has(r.category));
     if (ser.fyNums.length > 1) {
-      renderChart('cpdTrendChart', yoyGenericConfig(ser, 'variance_amount',
+      document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel();
+      renderChart('cpdTrendPriceChart', yoyGenericConfig(ser, 'sales_amount',
+        d => d.count ? d.sales_amount / d.count / 1000000 : null,
+        '売上額', '販売単価(百万円換算)', '金額(¥)', true, '売上額・販売単価'));
+      renderChart('cpdTrendVarianceLeadChart', yoyGenericConfig(ser, 'variance_amount', null,
+        '粗利差異', '', '金額(¥)', true, '粗利差異'));
+      renderChart('cpdTrendSalesQtyChart', yoyGenericConfig(ser, 'count', null,
+        '数量', '', '件数', false, '販売数量'));
+      renderChart('cpdTrendProfitMarginChart', yoyGenericConfig(ser, 'gross_profit',
         d => d.sales_amount ? d.gross_profit / d.sales_amount : null,
-        '粗利差異', '粗利率', '金額(¥)', true, 'カテゴリ別 粗利差異・粗利率'));
+        '粗利額', '粗利率', '金額(¥)', true, '粗利額・粗利率'));
       return;
     }
   }
@@ -3193,8 +3228,117 @@ function renderPvInsight() {
   el.textContent = lines.join('\n');
 }
 
+// ⑥粗利差異: 拠点・上振れ/下振れの絞り込みに応じて、コンディション別/価格帯別/カテゴリ別に分解する
+function pvFilterState() {
+  const loc = locSel.value;
+  const useLoc = loc && loc !== ALL_LOC;
+  const side = (document.getElementById('pvSide') || {}).value || 'both';
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const rowFilter = r => (!useLoc || r.location === loc) &&
+    (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  return { loc, useLoc, side, rowFilter, label: (useLoc ? loc : '全拠点') };
+}
+
+// side に応じて「見たい金額・件数」を取り出す
+function pvPick(o, side) {
+  if (side === 'up') return { amt: o.upside_amount || 0, n: o.upside_count || 0 };
+  if (side === 'down') return { amt: o.downside_amount || 0, n: o.downside_count || 0 };
+  return { amt: o.variance_sum || 0, n: o.count || 0 };
+}
+
+function renderPvBreakdowns() {
+  const st = pvFilterState();
+  const sideLabel = st.side === 'up' ? '上振れ' : (st.side === 'down' ? '下振れ' : '差引');
+  const pl = document.getElementById('pvBreakPeriodLabel');
+  if (pl) pl.textContent = currentPeriodLabel() + ' / ' + st.label + ' / ' + sideLabel;
+
+  const agg = (rowsArr, dim) => {
+    const map = new Map();
+    rowsArr.filter(st.rowFilter).forEach(r => {
+      const k = r[dim];
+      const o = map.get(k) || { count: 0, variance_sum: 0, upside_count: 0, upside_amount: 0,
+                                downside_count: 0, downside_amount: 0, sort: r.price_band_sort || 0 };
+      ['count', 'variance_sum', 'upside_count', 'upside_amount', 'downside_count', 'downside_amount']
+        .forEach(f => o[f] += r[f] || 0);
+      map.set(k, o);
+    });
+    return Array.from(map.entries());
+  };
+
+  const mkTable = (list, dimName, sortFn) => {
+    const rows = list.slice().sort(sortFn);
+    const tot = rows.reduce((a, [, o]) => {
+      const p = pvPick(o, st.side);
+      return { n: a.n + p.n, amt: a.amt + p.amt, cnt: a.cnt + (o.count || 0) };
+    }, { n: 0, amt: 0, cnt: 0 });
+    const body = rows.map(([k, o]) => {
+      const p = pvPick(o, st.side);
+      const rate = o.count ? p.n / o.count : null;
+      return '<tr>' + impCell(k) + impCell(fmtInt(o.count), { num: 1 }) + impCell(fmtInt(p.n), { num: 1 }) +
+        impCell(rate == null ? '-' : fmtPct(rate), { num: 1 }) + impCell(fmtYen(p.amt), { num: 1 }) +
+        impCell(p.n ? fmtYen(p.amt / p.n) : '-', { num: 1 }) + '</tr>';
+    }).join('') +
+      '<tr>' + impCell('合計', { bg: '#eef1f5', bold: 1 }) + impCell(fmtInt(tot.cnt), { num: 1, bg: '#eef1f5', bold: 1 }) +
+      impCell(fmtInt(tot.n), { num: 1, bg: '#eef1f5', bold: 1 }) +
+      impCell(tot.cnt ? fmtPct(tot.n / tot.cnt) : '-', { num: 1, bg: '#eef1f5', bold: 1 }) +
+      impCell(fmtYen(tot.amt), { num: 1, bg: '#eef1f5', bold: 1 }) +
+      impCell(tot.n ? fmtYen(tot.amt / tot.n) : '-', { num: 1, bg: '#eef1f5', bold: 1 }) + '</tr>';
+    return { html: impTable([{ name: dimName }, { name: '対象商品数', num: 1 }, { name: sideLabel + '件数', num: 1 },
+      { name: sideLabel + '比率', num: 1 }, { name: sideLabel + '金額', num: 1 }, { name: '1件あたり', num: 1 }], body), rows };
+  };
+
+  // コンディション別
+  const condList = agg(VARIANCE_CONDITION_ROWS, 'condition');
+  const condT = mkTable(condList, 'コンディション', (a, b) => conditionSortKey(a[0]) - conditionSortKey(b[0]));
+  const ce = document.getElementById('pvCondTable');
+  if (ce) ce.innerHTML = condT.html;
+  renderChart('pvCondChart', {
+    type: 'bar',
+    data: {
+      labels: condT.rows.map(x => x[0]),
+      datasets: [
+        { label: '上振れ金額', data: condT.rows.map(x => x[1].upside_amount), backgroundColor: '#2ecc71' },
+        { label: '下振れ金額', data: condT.rows.map(x => x[1].downside_amount), backgroundColor: '#e0653a' }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { title: { display: true, text: 'コンディション別 上振れ/下振れ金額' },
+        legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+      scales: { y: { ticks: { callback: v => (v / 1000000) + 'M' } } } }
+  });
+
+  // 価格帯別
+  const bandList = agg(VARIANCE_BAND_ROWS, 'price_band');
+  const bandT = mkTable(bandList, '価格帯', (a, b) => (a[1].sort || 0) - (b[1].sort || 0));
+  const be = document.getElementById('pvBandTable');
+  if (be) be.innerHTML = bandT.html;
+  renderChart('pvBandChart', {
+    type: 'bar',
+    data: {
+      labels: bandT.rows.map(x => x[0]),
+      datasets: [
+        { label: '上振れ金額', data: bandT.rows.map(x => x[1].upside_amount), backgroundColor: '#2ecc71' },
+        { label: '下振れ金額', data: bandT.rows.map(x => x[1].downside_amount), backgroundColor: '#e0653a' }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { title: { display: true, text: '価格帯別 上振れ/下振れ金額' },
+        legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+      scales: { y: { ticks: { callback: v => (v / 1000000) + 'M' } } } }
+  });
+
+  // カテゴリ別(既存の profit_variance_rows を流用)
+  const catList = agg(PROFIT_VARIANCE_ROWS, 'category');
+  const catT = mkTable(catList, 'カテゴリ', (a, b) => Math.abs(pvPick(b[1], st.side).amt) - Math.abs(pvPick(a[1], st.side).amt));
+  const cte = document.getElementById('pvCatTable');
+  if (cte) cte.innerHTML = catT.html;
+
+  ['pvCondTable', 'pvBandTable', 'pvCatTable'].forEach(id => makeSortable(id, -1));
+}
+
 function renderProfitVariancePage() {
   renderPvInsight();
+  renderPvBreakdowns();
   renderProfitVarianceKPIs();
   renderProfitVarianceTrend();
   renderProfitVarianceLocationSection();
@@ -4095,7 +4239,8 @@ function setPage(page) {
   Object.keys(PAGE_NAV_MAP).forEach(p => document.getElementById(PAGE_NAV_MAP[p]).classList.toggle('active', p === page));
   ALL_PAGES.forEach(p => document.getElementById('page-' + p).classList.toggle('active', p === page));
   // E項目: ⑧赤字ページでも拠点セレクタを使えるようにする
-  ctlLoc.classList.toggle('visible', page === 'detail' || page === 'deficit' || page === 'condition' || page === 'priceband');
+  ctlLoc.classList.toggle('visible', page === 'detail' || page === 'deficit' || page === 'condition' ||
+    page === 'priceband' || page === 'profitvariance');
   // ⑨顧客セグメントページは全期間累計のため、期間・拠点の絞り込みUIは非表示にする
   const globalControls = document.getElementById('globalControls');
   if (globalControls) globalControls.style.display = (page === 'customer') ? 'none' : '';
@@ -4144,7 +4289,13 @@ if (weekStartSel) {
   });
 }
 periodSel.addEventListener('change', () => { renderPageContent(); });
-locSel.addEventListener('change', () => { if (currentPage === 'detail' || currentPage === 'deficit' || currentPage === 'condition' || currentPage === 'priceband') renderPageContent(); });
+locSel.addEventListener('change', () => {
+  if (['detail', 'deficit', 'condition', 'priceband', 'profitvariance'].includes(currentPage)) renderPageContent();
+});
+{
+  const pvSideSel = document.getElementById('pvSide');
+  if (pvSideSel) pvSideSel.addEventListener('change', () => { if (currentPage === 'profitvariance') renderPageContent(); });
+}
 if (detailCatMultiSel) detailCatMultiSel.addEventListener('change', () => { if (currentPage === 'detail') renderPageContent(); });
 
 if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
