@@ -31,8 +31,14 @@ _DERIVED = {
 }
 
 
+# 1行=1商品の明細。合算すると意味が壊れるうえ出荷日も失われるので丸めない。
+_ATOMIC_KEYS = {'item_detail_rows'}
+
+
 def _collapse_old_period_to_month(key, rows):
     """week_start が DAILY_FROM より前の行を、同じ月・同じ次元でまとめて1行にする。"""
+    if key in _ATOMIC_KEYS:
+        return rows
     if not rows or not isinstance(rows[0], dict) or 'week_start' not in rows[0]:
         return rows
     cols = list(rows[0].keys())
@@ -72,7 +78,12 @@ def _collapse_old_period_to_month(key, rows):
 
 
 _before = sum(len(v) for v in data.values() if isinstance(v, list))
-data = {k: (_collapse_old_period_to_month(k, v) if isinstance(v, list) else v) for k, v in data.items()}
+# 全体をまとめて作り直すとデータが一瞬2重にメモリへ載るため、キーごとに置き換える。
+for _k in list(data.keys()):
+    _v = data[_k]
+    if isinstance(_v, list):
+        data[_k] = _collapse_old_period_to_month(_k, _v)
+        del _v
 _after = sum(len(v) for v in data.values() if isinstance(v, list))
 data['daily_from'] = DAILY_FROM
 print(f'[INFO] 20期を月次に丸め: 合計行数 {_before:,} -> {_after:,} ({_after/_before*100:.1f}%)')
@@ -830,8 +841,19 @@ html = r'''<!DOCTYPE html>
   <!-- F項目: 「カテゴリ別 赤字比較」を「推移」より前に表示する -->
   <h2>カテゴリ別 赤字比較 <span id="deficitCatPeriodLabel" class="badge"></span></h2>
   <div class="card chart-card" style="height:300px;"><canvas id="deficitCatChart"></canvas></div>
+
+  <details class="card insight-box" id="deficitItemBox" style="display:none;" open>
+    <summary style="cursor:pointer;font-weight:700;color:#1c2b4a;font-size:15px;list-style:revert;">
+      <span id="deficitItemTitle">カテゴリの商品明細</span>
+      <span class="badge">クリックで開閉</span>
+    </summary>
+    <div class="insight-meta" style="margin-top:8px;" id="deficitItemSummary"></div>
+    <div id="deficitItemTable" class="detail-table" style="margin-top:8px;"></div>
+    <p class="note">表示対象は「赤字だった商品」と「SRが発生した商品」です。金額はすべて税抜です(販売価格・買取価格・返送料は元データが税込のため÷1.1)。見込差＝落札価格−見込販売価格で、マイナスなら見込より安く売れたことを意味します。検索欄でコンディション・買取者・SR分類などの絞り込みができます。</p>
+  </details>
+
   <div class="card table-section">
-    <h3>カテゴリ別 詳細</h3>
+    <h3>カテゴリ別 詳細 <span class="badge">カテゴリ名をクリックすると商品明細が開きます</span></h3>
     <div id="detailTableDeficitCategory" class="detail-table"></div>
   </div>
 
@@ -1190,6 +1212,9 @@ const CATEGORY_PROFIT_DETAIL_ROWS = rehydrateRows(DATA.category_profit_detail_ro
 const DEFICIT_ROWS = rehydrateRows(DATA.deficit_rows);
 // ⑦: 「会計上の粗利」と「最終利益」の2軸で集計した行
 const DEFICIT_MODE_ROWS = rehydrateRows(DATA.deficit_mode_rows);
+// ⑦赤字ページ: カテゴリをクリックしたときに出す商品1件ごとの明細
+// (対象は「赤字だった商品」と「SRが発生した商品」。商品名・SR自由記述は含まない)
+const ITEM_DETAIL_ROWS = rehydrateRows(DATA.item_detail_rows);
 // ⑥粗利差異ページ: コンディション別・価格帯別に上振れ/下振れを分解した行
 const VARIANCE_CONDITION_ROWS = rehydrateRows(DATA.variance_condition_rows);
 const VARIANCE_BAND_ROWS = rehydrateRows(DATA.variance_band_rows);
@@ -3460,9 +3485,17 @@ function deficitDerive(o) {
   return Object.assign({}, o, { avg_deficit_per_item: o.count ? o.total_deficit / o.count : null });
 }
 
-function DEFICIT_COLUMNS(nameLabel) {
+function DEFICIT_COLUMNS(nameLabel, drill) {
   return [
-    { name: nameLabel },
+    drill
+      ? {
+          name: nameLabel,
+          // クリックでそのカテゴリの商品明細(赤字商品＋SR発生商品)を上部に表示する
+          formatter: (cell) => gridjs.html(
+            '<a href="#" class="deficit-drill" data-cat="' + cell + '" ' +
+            'style="color:#2455c9;text-decoration:underline;cursor:pointer;">' + cell + '</a>')
+        }
+      : { name: nameLabel },
     { name: '出荷商品数', formatter: c => fmtInt(c) },
     { name: '赤字商品数', formatter: c => fmtInt(c) },
     { name: '赤字率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
@@ -3552,7 +3585,7 @@ function renderDeficitCategorySection() {
   renderChart('deficitCatChart', dualAxisMoneyRightConfig(
     data.map(d => d.name), data.map(d => d.count), data.map(d => d.total_deficit), '赤字商品数', '赤字額合計', '件数'
   ));
-  renderSimpleTableInto('detailTableDeficitCategory', DEFICIT_COLUMNS('カテゴリ'), data.map(deficitRow), 20);
+  renderSimpleTableInto('detailTableDeficitCategory', DEFICIT_COLUMNS('カテゴリ', true), data.map(deficitRow), 20);
 }
 
 function renderDeficitProcSection() {
@@ -3760,6 +3793,95 @@ function renderDeficitCrossTab() {
   wrap.innerHTML = html + '</tbody></table>';
 }
 
+// ⑦: カテゴリ名クリックで開く「商品1件ごとの明細」
+// 現在選択中の期間・拠点で絞り込み、そのカテゴリの商品を1行ずつ表示する。
+let deficitDrillCat = null;
+
+const ITEM_DETAIL_COLUMNS = [
+  { name: '出荷日' },
+  { name: '商品ID' },
+  { name: '拠点' },
+  { name: '仕入れ方法' },
+  { name: 'コンディション' },
+  { name: '価格帯' },
+  { name: '買取者' },
+  { name: '買取価格(円)', formatter: c => fmtYen(c) },
+  { name: '見込販売価格(円)', formatter: c => fmtYen(c) },
+  { name: '落札価格(円)', formatter: c => fmtYen(c) },
+  { name: '見込差(円)', formatter: c => gridjs.html('<span style="color:' + (c < 0 ? '#c0392b' : '#1e7a46') + ';">' + fmtYen(c) + '</span>') },
+  { name: '粗利(円)', formatter: c => fmtYen(c) },
+  { name: '返送料(円)', formatter: c => fmtYen(c) },
+  { name: '最終利益(円)', formatter: c => gridjs.html('<span style="color:' + (c < 0 ? '#c0392b' : '#1e7a46') + ';font-weight:600;">' + fmtYen(c) + '</span>') },
+  { name: 'SR', formatter: c => (c > 0 ? 'あり(' + c + ')' : '-') },
+  { name: 'SR分類' },
+  { name: '原因' },
+  { name: '返品' },
+  { name: '返金額(円)', formatter: c => fmtYen(c) }
+];
+
+function itemDetailRow(r) {
+  return [
+    r.week_start, r.product_id || '-', r.location, r.procurement_type, r.condition, r.price_band,
+    r.buyer, r.buy_price, r.expected_price, r.sale_price, r.variance,
+    r.actual_profit, r.return_shipping, r.final_profit,
+    r.sr_count,
+    r.sr_count ? (r.sr_major + (r.sr_minor && r.sr_minor !== '(小項目なし)' ? ' / ' + r.sr_minor : '')) : '-',
+    r.sr_count ? (r.cause_major + (r.cause_part && r.cause_part !== '(不明)' ? ' / ' + r.cause_part : '')) : '-',
+    r.returned ? 'あり' : '-',
+    r.refund_amount
+  ];
+}
+
+function renderDeficitItemDrill(cat) {
+  const box = document.getElementById('deficitItemBox');
+  if (!box) return;
+  deficitDrillCat = cat;
+  box.style.display = '';
+  if (typeof ITEM_DETAIL_ROWS === 'undefined' || !ITEM_DETAIL_ROWS.length) {
+    document.getElementById('deficitItemTitle').textContent = cat + ' の商品明細';
+    document.getElementById('deficitItemSummary').textContent =
+      '商品明細データがまだ作られていません(データを再集計すると表示されます)。';
+    document.getElementById('deficitItemTable').innerHTML = '';
+    return;
+  }
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const loc = locSel.value, useLoc = loc && loc !== ALL_LOC;
+  const rows = ITEM_DETAIL_ROWS.filter(r =>
+    r.category === cat &&
+    (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
+    (!useLoc || r.location === loc));
+
+  document.getElementById('deficitItemTitle').textContent =
+    cat + ' の商品明細(' + currentPeriodLabel() + ' / ' + (useLoc ? loc : '全拠点') + ')';
+
+  const n = rows.length;
+  const srN = rows.filter(r => r.sr_count > 0).length;
+  const lossN = rows.filter(r => r.final_profit < 0).length;
+  const lossAmt = rows.filter(r => r.final_profit < 0).reduce((a, r) => a + (-r.final_profit), 0);
+  const refund = rows.reduce((a, r) => a + (r.refund_amount || 0), 0);
+  const retN = rows.filter(r => r.returned).length;
+  document.getElementById('deficitItemSummary').textContent = n
+    ? ('該当' + fmtInt(n) + '点  /  うち最終利益マイナス' + fmtInt(lossN) + '点(' + fmtYen(lossAmt) + ')  /  '
+       + 'SR発生' + fmtInt(srN) + '点  /  返品' + fmtInt(retN) + '点  /  返金額合計' + fmtYen(refund))
+    : 'この条件に該当する商品はありません(期間・拠点の絞り込みを広げてみてください)。';
+
+  rows.sort((a, b) => (a.final_profit || 0) - (b.final_profit || 0));
+  renderSimpleTableInto('deficitItemTable', ITEM_DETAIL_COLUMNS, rows.map(itemDetailRow), 20);
+}
+
+// カテゴリ名クリックの受け口(Grid.jsは再描画で要素が入れ替わるためイベント委譲で拾う)
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (t && t.classList && t.classList.contains('deficit-drill')) {
+      ev.preventDefault();
+      renderDeficitItemDrill(t.getAttribute('data-cat'));
+      const box = document.getElementById('deficitItemBox');
+      if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+}
+
 function renderDeficitPage() {
   renderDeficitModeSummary();
   renderDeficitInsight();
@@ -3768,6 +3890,8 @@ function renderDeficitPage() {
   renderDeficitCategorySection();
   renderDeficitProcSection();
   renderDeficitCrossTab();
+  // 商品明細を開いたまま期間・拠点を変えたときは、同じカテゴリで中身を更新する
+  if (deficitDrillCat) renderDeficitItemDrill(deficitDrillCat);
 }
 
 // ---------- ⑨ SRリピーター・ロイヤルカスタマー分析ページ ----------

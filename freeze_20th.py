@@ -36,6 +36,33 @@ DERIVED = {
 }
 
 
+# 1行=1商品の明細データ。合算すると意味が壊れるので月次に丸めない。
+ATOMIC_KEYS = {"item_detail_rows"}
+
+
+def atomic_rows(key: str, full: list[dict], live: list[dict] | None) -> list[dict]:
+    """明細データ(1行=1商品)を凍結する。丸めずにそのまま持つ。
+
+    ・20期の日付の行 … そのまま残す
+    ・21期の日付の行 … 21期ファイルだけの集計(live)に出てこないもの、つまり
+      「20期のCSVにしか入っていない商品」だけを残す。毎週の自動更新で作り直される分と
+      重複しないよう、商品IDで突き合わせて差集合を取る。
+    """
+    if not full:
+        return []
+    live_ids = {r.get("product_id") for r in (live or []) if r.get("week_start", "") >= FY21_START}
+    out, carried = [], 0
+    for r in full:
+        if r["week_start"] < FY21_START:
+            out.append(r)
+        elif r.get("product_id") not in live_ids:
+            out.append(r)
+            carried += 1
+    if carried:
+        print(f"    ※{key}: 20期ファイルにしか無い21期日付の商品 {carried:,}件を引き継ぎます")
+    return out
+
+
 def collapse_to_month(key: str, rows: list[dict]) -> list[dict]:
     """week_start が FY21_START より前の行だけを、同じ月・同じ次元でまとめる。"""
     if not rows or not isinstance(rows[0], dict) or "week_start" not in rows[0]:
@@ -161,6 +188,12 @@ def main():
             print(f"  {k}: {len(v):,}行 (そのまま同梱)")
             continue
         before = [r for r in v if r["week_start"] < FY21_START]
+        if k in ATOMIC_KEYS:
+            frozen[k] = atomic_rows(k, v, live.get(k) if live else None)
+            total_before += len(before)
+            total_after += len(frozen[k])
+            print(f"  {k}: {len(before):,}行 -> {len(frozen[k]):,}行 (明細のため丸めません)")
+            continue
         after = collapse_to_month(k, v)
         extra = boundary_rows(k, v, live.get(k) or []) if live else []
         total_before += len(before)

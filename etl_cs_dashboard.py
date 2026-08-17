@@ -1458,6 +1458,8 @@ SHUKKA_DETAIL_COLUMNS = [
     "expected_profit", "actual_profit", "variance",
     # 以下、種別(仕入れ方法)・送料・リードタイム分析用に追加した列
     "procurement_type", "shipping_fee", "lead_days", "norm_product_id",
+    # ⑦赤字ページの商品明細ドリルダウン用(買取担当者・商品ID)
+    "buyer",
 ]
 
 
@@ -1555,12 +1557,19 @@ def build_shukka_detail(
     win_dt = pd.to_datetime(all_df["落札"], errors="coerce")
     all_df["lead_days"] = (win_dt - buy_dt).dt.days
 
+    # ⑦赤字ページの商品明細で「誰が買い取った商品か」を出すための担当者名。
+    # 列が無い週でも落ちないようにフォールバックする。
+    if "買取ユーザー" in all_df.columns:
+        all_df["buyer"] = all_df["買取ユーザー"].fillna("(不明)").astype(str).str.strip().replace("", "(不明)")
+    else:
+        all_df["buyer"] = "(不明)"
+
     return all_df[
         [
             "_week_start", "_week_end", "_year_month", "location", "category", "condition",
             "price_band", "price_band_sort", "落札価格_num", "販売価格_num", "買取価格_num",
             "expected_profit", "actual_profit", "variance",
-            "procurement_type", "shipping_fee", "lead_days", "norm_product_id",
+            "procurement_type", "shipping_fee", "lead_days", "norm_product_id", "buyer",
         ]
     ].rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
 
@@ -2278,6 +2287,168 @@ def build_deficit_mode_rows(
         }
         for _, r in grouped.iterrows()
     ]
+
+
+# ---------------------------------------------------------------------------
+# ⑦赤字ページ「カテゴリ別 詳細」クリック時に開く、商品1件ごとの明細
+# ---------------------------------------------------------------------------
+# 公開ページに載るため、商品名・SRの自由記述(原因詳細)・顧客情報は含めない。
+# 含めるのは金額と分類、および買取担当者名(社内の担当者別傾向を見るため)。
+
+ITEM_DETAIL_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "condition",
+    "price_band", "price_band_sort", "procurement_type", "buyer", "product_id",
+    "buy_price", "expected_price", "sale_price",
+    "expected_profit", "actual_profit", "variance",
+    "return_shipping", "final_profit",
+    "sr_count", "sr_major", "sr_minor", "cause_major", "cause_part",
+    "refund_amount", "returned",
+]
+
+
+def build_item_sr_index(weeks: list[WeekFiles], stats: ExclusionStats) -> dict[str, dict]:
+    """商品ID(正規化キー) -> その商品で起きたSRの情報 の辞書を作る。
+
+    SRの判定・除外条件は aggregate_sr_major と揃える(種別=SR、ステータス=スルーは除外、
+    対象外拠点は除外)。1商品で複数のSRが立つことがあるため件数を数え、分類は最初に
+    現れたものを代表として採用する。
+
+    原因(原因分類・原因元)は build_cause_rows と同じ優先順で、
+      1. CS_返金の「管理用メモ」に記載された原因(運用変更後)
+      2. CS_登録【分類用】の「原因分類」「原因元」列
+    の順に採用する。返金額・返品有無もここで拾う。
+    """
+    index: dict[str, dict] = {}
+
+    def _blank():
+        return {"sr_count": 0, "sr_major": "", "sr_minor": "", "cause_major": "", "cause_part": "",
+                "refund_amount": 0.0, "returned": 0}
+
+    # --- 1) CS_登録【分類用】(無ければCS_登録)から SR件数・大項目・小項目・返品有無 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "商品ID" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "登録"))
+    if frames:
+        all_df = concat_and_dedup(frames, id_col="CS ID")
+        all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+        all_df = all_df[all_df["ステータス"].fillna("").astype(str).str.strip() != "スルー"].copy()
+        all_df = all_df[all_df["種別"].fillna("").astype(str).str.strip() == "SR"].copy()
+        has_bunrui = "分類" in all_df.columns
+        has_cause = "原因分類" in all_df.columns
+        for _, r in all_df.iterrows():
+            nid = normalize_product_id(r.get("商品ID"))
+            if not nid:
+                continue
+            rec = index.setdefault(nid, _blank())
+            rec["sr_count"] += 1
+            if has_bunrui and not rec["sr_major"]:
+                major = extract_major_category(r.get("分類"))
+                if major:
+                    rec["sr_major"] = major
+                    rec["sr_minor"] = extract_minor_category(r.get("分類")) or "(小項目なし)"
+            if has_cause and not rec["cause_major"]:
+                cm = str(r.get("原因分類") or "").strip()
+                if cm and cm.lower() != "nan":
+                    rec["cause_major"] = cm
+                    cp = str(r.get("原因元") or "").strip()
+                    rec["cause_part"] = cp if cp and cp.lower() != "nan" else "(不明)"
+            if str(r.get("返品") or "").strip() == "あり":
+                rec["returned"] = 1
+
+    # --- 2) CS_返金から 返金額と、管理用メモに書かれた原因(こちらを優先) ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "商品ID" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "返金日"))
+    if frames:
+        all_df = concat_and_dedup(frames, id_col="CS ID")
+        all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+        has_memo = "管理用メモ" in all_df.columns
+        amounts = to_excl_tax(to_numeric(all_df["返金額"])) if "返金額" in all_df.columns else None
+        for pos, (_, r) in enumerate(all_df.iterrows()):
+            nid = normalize_product_id(r.get("商品ID"))
+            if not nid:
+                continue
+            rec = index.setdefault(nid, _blank())
+            if amounts is not None:
+                amt = amounts.iloc[pos]
+                if amt == amt:  # NaNでない
+                    rec["refund_amount"] += float(amt)
+            if str(r.get("返品") or "").strip() == "あり":
+                rec["returned"] = 1
+            if has_memo:
+                cm, cp = parse_memo_cause(r.get("管理用メモ"))
+                if cm:  # 返金メモの原因は分類用ファイルより優先する
+                    rec["cause_major"] = cm
+                    rec["cause_part"] = cp or "(不明)"
+    return index
+
+
+def build_item_detail_rows(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]],
+    stats: ExclusionStats
+) -> list[dict]:
+    """⑦赤字ページのドリルダウン用に、商品1件ごとの明細を作る。
+
+    全出荷商品(28万点超)を載せるとファイルが巨大になるため、対象を
+      ・赤字だった商品(粗利損ベース または 最終利益ベースのいずれか)
+      ・SRが発生した商品(赤字でなくても含める)
+    に絞る。この2つが「なぜ利益が出なかったのか」を追うために必要な母集団になる。
+    """
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return []
+    sr_index = build_item_sr_index(weeks, stats)
+
+    keep_sr = d["norm_product_id"].map(lambda nid: (sr_index.get(nid, {}).get("sr_count", 0) > 0) if nid else False)
+    keep = (d["accounting_profit"] < 0) | (d["final_profit_item"] < 0) | keep_sr
+    d = d[keep].copy()
+    if d.empty:
+        return []
+
+    blank = {"sr_count": 0, "sr_major": "", "sr_minor": "", "cause_major": "", "cause_part": "",
+             "refund_amount": 0.0, "returned": 0}
+    out = []
+    for _, r in d.iterrows():
+        nid = r["norm_product_id"]
+        sr = sr_index.get(nid) or blank
+        out.append({
+            "week_start": r["week_start"], "week_end": r["week_end"], "year_month": r["year_month"],
+            "location": r["location"], "category": r["category"], "condition": r["condition"],
+            "price_band": r["price_band"], "price_band_sort": int(r["price_band_sort"]),
+            "procurement_type": r["procurement_type"],
+            "buyer": r.get("buyer") or "(不明)",
+            "product_id": nid or "",
+            # 金額はすべて税抜に統一(販売価格・買取価格は元データが税込のため÷1.1済み)
+            "buy_price": _safe_float(to_excl_tax(r["買取価格_num"])),
+            "expected_price": _safe_float(to_excl_tax(r["販売価格_num"])),
+            "sale_price": _safe_float(r["落札価格_num"]),
+            "expected_profit": _safe_float(r["expected_profit"]),
+            "actual_profit": _safe_float(r["actual_profit"]),
+            "variance": _safe_float(r["variance"]),
+            "return_shipping": _safe_float(r["return_shipping_amount"]),
+            "final_profit": _safe_float(r["final_profit_item"]),
+            "sr_count": int(sr["sr_count"]),
+            "sr_major": sr["sr_major"] or ("(分類なし)" if sr["sr_count"] else ""),
+            "sr_minor": sr["sr_minor"] or ("(小項目なし)" if sr["sr_count"] else ""),
+            "cause_major": sr["cause_major"] or ("(未記入)" if sr["sr_count"] else ""),
+            "cause_part": sr["cause_part"] or ("(未記入)" if sr["sr_count"] else ""),
+            "refund_amount": _safe_float(sr["refund_amount"]),
+            "returned": int(sr["returned"]),
+        })
+    out.sort(key=lambda x: (x["week_start"], x["location"], x["category"]))
+    return out
 
 
 def aggregate_deficit(

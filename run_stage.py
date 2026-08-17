@@ -198,6 +198,10 @@ def run_stage(stage: str):
         dm = m.build_deficit_mode_rows(weeks, detail, cost_master)
         print(f"  損益2軸(会計上の粗利/最終利益): {len(dm):,}行", flush=True)
         save("deficit_mode_rows", dm)
+        stats_item = m.ExclusionStats()
+        item = m.build_item_detail_rows(weeks, detail, cost_master, stats_item)
+        print(f"  商品明細(赤字＋SR発生): {len(item):,}行", flush=True)
+        save("item_detail_rows", item)
 
     elif stage == "customer_segments":
         # ⑨ SRリピーター・ロイヤルカスタマー分析。受注_通常_出荷の顧客情報(氏名・住所・
@@ -276,6 +280,7 @@ def run_stage(stage: str):
         category_profit_detail_rows = load("category_profit_detail_rows")
         deficit_rows = load("deficit_rows")
         deficit_mode_rows = load("deficit_mode_rows") if has("deficit_mode_rows") else []
+        item_detail_rows = load("item_detail_rows") if has("item_detail_rows") else []
         customer_segment_rows = load("customer_segment_rows") if has("customer_segment_rows") else []
         customer_detail_rows = load("customer_detail_rows") if has("customer_detail_rows") else []
 
@@ -332,6 +337,7 @@ def run_stage(stage: str):
             "category_profit_detail_rows": category_profit_detail_rows,
             "deficit_rows": deficit_rows,
             "deficit_mode_rows": deficit_mode_rows,
+            "item_detail_rows": item_detail_rows,
             "customer_segment_rows": customer_segment_rows,
             "customer_detail_rows": customer_detail_rows,
             "insights": m.STATIC_INSIGHTS,
