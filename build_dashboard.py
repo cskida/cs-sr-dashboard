@@ -573,6 +573,49 @@ html = r'''<!DOCTYPE html>
     <div id="yoyTableAllCategory"></div>
   </div>
 
+  <!-- 期間 × カテゴリ のマトリクス。カテゴリ同士を並べて、時系列の動きを比較するためのもの。
+       期間の粒度は上部の「期間粒度」セレクタ(週次/月次/四半期…)に従う。 -->
+  <h2>期間 × カテゴリ の推移比較 <span id="catMatrixGranLabel" class="badge"></span></h2>
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>指標</label>
+      <select id="catMatrixMetric">
+        <option value="refund_amount">返金額</option>
+        <option value="refund_rate">返金額率（返金額÷売上）</option>
+        <option value="sr_count">SR発生件数</option>
+        <option value="sr_rate" selected>SR率（SR件数÷出荷数）</option>
+        <option value="question_count">質問数</option>
+        <option value="question_rate">質問率（質問数÷出品数）</option>
+        <option value="inquiry_count">問合せ件数（落札後の商品質問）</option>
+        <option value="inquiry_rate">問合せ率（問合せ件数÷出荷数）</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>グラフに出すカテゴリ（出荷数の多い順）</label>
+      <select id="catMatrixTopN">
+        <option value="5">上位5</option>
+        <option value="8" selected>上位8</option>
+        <option value="12">上位12</option>
+        <option value="999">すべて</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>表示する期間</label>
+      <select id="catMatrixSpan">
+        <option value="12">直近12期間</option>
+        <option value="18" selected>直近18期間</option>
+        <option value="26">直近26期間</option>
+        <option value="999">すべて</option>
+      </select>
+    </div>
+  </div>
+  <div class="card chart-card" style="height:340px;"><canvas id="catMatrixChart"></canvas></div>
+  <div class="card table-section">
+    <h3 id="catMatrixTableTitle">期間 × カテゴリ 一覧</h3>
+    <div id="catMatrixTable" style="overflow-x:auto;"></div>
+    <p class="note">行がカテゴリ、列が期間です。色が濃いほど値が大きいことを示します（率は各指標の最大値で正規化）。いちばん右の列は選択期間の合計（率は分子・分母をそれぞれ合計してから割り直した値。率の平均ではありません）で、この順に並べています。率を見るときは、母数（出荷数・出品数・売上）が全体の0.5%に満たないカテゴリは「1件で50%」のような極端な値になるため、灰色にして下にまとめています。上部の「期間粒度」を切り替えると週次・月次・四半期などに変わります。拠点フィルタはこの表には掛かりません（全拠点合計）。</p>
+  </div>
+
   <h2>カテゴリ別 内訳比較(件数・率・金額を全カテゴリ並べて表示) <span id="periodLabelCat" class="badge"></span></h2>
   <div class="mini-charts-grid one-col" id="catChartsGrid"></div>
 
@@ -816,7 +859,7 @@ html = r'''<!DOCTYPE html>
       <label>損益の見方</label>
       <select id="deficitMode">
         <option value="acc">粗利損(落札価格-買取価格/1.1)</option>
-        <option value="fin" selected>最終利益(粗利-返送料/1.1)</option>
+        <option value="fin" selected>最終利益(粗利-返品時の発送送料/1.1-返送料/1.1)</option>
       </select>
     </div>
   </div>
@@ -886,6 +929,23 @@ html = r'''<!DOCTYPE html>
     <div id="deficitCrossTable" style="overflow-x:auto;"></div>
     <p class="note">上部の「損益の見方」(粗利損／最終利益)と、拠点・カテゴリ・期間の絞り込みがそのまま反映されます。色が濃いほど値が大きい(＝悪い)ことを示します。セルにマウスを乗せると出荷点数・赤字点数・赤字額が表示されます。出荷点数の多い順に上位15カテゴリを表示しています。</p>
   </div>
+
+  <!-- 雑損: 返品されたが再販不可と判断され、商品V2で「雑損」ステータスになった商品。
+       売上が立たず買取価格がまるごと損失になるため、赤字商品とは別枠で集計する。 -->
+  <h2>雑損(再販不可) <span id="writeoffPeriodLabel" class="badge"></span></h2>
+  <div class="kpi-grid" id="writeoffKpi"></div>
+  <div class="card chart-card" style="height:300px;"><canvas id="writeoffTrendChart"></canvas></div>
+  <div class="mini-charts-grid">
+    <div class="card table-section">
+      <h3>カテゴリ別 雑損</h3>
+      <div id="writeoffCatTable"></div>
+    </div>
+    <div class="card table-section">
+      <h3>拠点別 雑損</h3>
+      <div id="writeoffLocTable"></div>
+    </div>
+  </div>
+  <p class="note">返品された商品のうち、再販できないと判断されて商品V2で「雑損」ステータスになったものです。売上が立たないため<b>買取価格がそのまま損失</b>になります(金額は税抜)。上の赤字(原価割れ)は「売れたが利益が出なかった商品」なので、雑損とは別の損失です。期間キーは他ページと同じ出荷日基準です。</p>
 
   <div class="card insight-box" style="background:#fff8ec;border-color:#f0dfb8;">
     <h3 style="color:#7a5b1e;">この表に入っていない「人の手間」のコスト</h3>
@@ -1212,6 +1272,8 @@ const CATEGORY_PROFIT_DETAIL_ROWS = rehydrateRows(DATA.category_profit_detail_ro
 const DEFICIT_ROWS = rehydrateRows(DATA.deficit_rows);
 // ⑦: 「会計上の粗利」と「最終利益」の2軸で集計した行
 const DEFICIT_MODE_ROWS = rehydrateRows(DATA.deficit_mode_rows);
+// ⑦赤字ページ: 雑損(返品後に再販不可と判断され、商品V2で「雑損」になった商品)
+const WRITEOFF_ROWS = rehydrateRows(DATA.writeoff_rows);
 // ⑦赤字ページ: カテゴリをクリックしたときに出す商品1件ごとの明細
 // (対象は「赤字だった商品」と「SRが発生した商品」。商品名・SR自由記述は含まない)
 const ITEM_DETAIL_ROWS = rehydrateRows(DATA.item_detail_rows);
@@ -3676,7 +3738,8 @@ function renderDeficitModeSummary() {
   const t = rows.reduce((a, r) => {
     ['shipped_count', 'acc_deficit_count', 'acc_deficit_amount', 'acc_profit_sum',
      'fin_deficit_count', 'fin_deficit_amount', 'fin_profit_sum',
-     'shipping_fee_total', 'return_shipping_total'].forEach(f => a[f] = (a[f] || 0) + (r[f] || 0));
+     'shipping_fee_total', 'lost_shipping_total', 'return_shipping_total',
+     'returned_count'].forEach(f => a[f] = (a[f] || 0) + (r[f] || 0));
     return a;
   }, {});
   const mode = (document.getElementById('deficitMode') || {}).value || 'fin';
@@ -3696,7 +3759,10 @@ function renderDeficitModeSummary() {
       (ship ? fmtPct(t.acc_deficit_count / ship) : '-')),
     metricSimpleCardHtml('最終利益: 点数 / 率', fmtInt(t.fin_deficit_count) + '点 / ' +
       (ship ? fmtPct(t.fin_deficit_count / ship) : '-')),
-    metricSimpleCardHtml('返送料(合計)', fmtYen(t.return_shipping_total)),
+    metricSimpleCardHtml('返品点数', fmtInt(t.returned_count) + '点' +
+      (ship ? '（' + fmtPct((t.returned_count || 0) / ship) + '）' : '')),
+    metricSimpleCardHtml('返品分の送料損失(発送＋返送)',
+      fmtYen((t.lost_shipping_total || 0) + (t.return_shipping_total || 0))),
     metricSimpleCardHtml('利益合計(' + modeName + ')', fmtYen(isFin ? t.fin_profit_sum : t.acc_profit_sum))
   ].join('');
 }
@@ -3810,6 +3876,7 @@ const ITEM_DETAIL_COLUMNS = [
   { name: '落札価格(円)', formatter: c => fmtYen(c) },
   { name: '見込差(円)', formatter: c => gridjs.html('<span style="color:' + (c < 0 ? '#c0392b' : '#1e7a46') + ';">' + fmtYen(c) + '</span>') },
   { name: '粗利(円)', formatter: c => fmtYen(c) },
+  { name: '発送送料(損失・円)', formatter: c => fmtYen(c) },
   { name: '返送料(円)', formatter: c => fmtYen(c) },
   { name: '最終利益(円)', formatter: c => gridjs.html('<span style="color:' + (c < 0 ? '#c0392b' : '#1e7a46') + ';font-weight:600;">' + fmtYen(c) + '</span>') },
   { name: 'SR', formatter: c => (c > 0 ? 'あり(' + c + ')' : '-') },
@@ -3823,7 +3890,7 @@ function itemDetailRow(r) {
   return [
     r.week_start, r.product_id || '-', r.location, r.procurement_type, r.condition, r.price_band,
     r.buyer, r.buy_price, r.expected_price, r.sale_price, r.variance,
-    r.actual_profit, r.return_shipping, r.final_profit,
+    r.actual_profit, r.lost_shipping, r.return_shipping, r.final_profit,
     r.sr_count,
     r.sr_count ? (r.sr_major + (r.sr_minor && r.sr_minor !== '(小項目なし)' ? ' / ' + r.sr_minor : '')) : '-',
     r.sr_count ? (r.cause_major + (r.cause_part && r.cause_part !== '(不明)' ? ' / ' + r.cause_part : '')) : '-',
@@ -3882,6 +3949,59 @@ if (typeof document.addEventListener === 'function') {
   });
 }
 
+// ⑦: 雑損(再販不可)の集計。売上ゼロで買取価格がまるごと損失になる商品。
+const WRITEOFF_FIELDS = ['count', 'loss_amount'];
+
+function renderWriteoffSection() {
+  const el = document.getElementById('writeoffKpi');
+  if (!el) return;
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const { rowFilter, locLabel, catLabel } = deficitFilterState();
+  const lbl = document.getElementById('writeoffPeriodLabel');
+  if (lbl) lbl.textContent = currentPeriodLabel() + ' / ' + locLabel + ' × ' + catLabel;
+
+  const inPeriod = (r) => (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  const rows = (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS)
+    .filter(r => inPeriod(r) && (!rowFilter || rowFilter(r)));
+  const cnt = rows.reduce((a, r) => a + (r.count || 0), 0);
+  const loss = rows.reduce((a, r) => a + (r.loss_amount || 0), 0);
+  // 母数の出荷点数は⑦の他のセクションと同じ deficit_mode_rows から取る
+  const ship = Array.from(buildShippedIndex('category', granularity, periodKey, rowFilter).values())
+    .reduce((a, v) => a + v, 0);
+
+  el.innerHTML = [
+    metricSimpleCardHtml('雑損 点数', fmtInt(cnt) + '点'),
+    metricSimpleCardHtml('雑損率(雑損点数÷出荷点数)', ship ? fmtPct(cnt / ship) : '-'),
+    metricSimpleCardHtml('雑損 損失額(買取価格・税抜)', fmtYen(loss)),
+    metricSimpleCardHtml('1点あたり損失', cnt ? fmtYen(loss / cnt) : '-'),
+    metricSimpleCardHtml('出荷1点あたり', ship ? fmtYen(loss / ship) : '-')
+  ].join('');
+
+  // 推移
+  const trend = buildDimTrendAlignedGeneric(
+    (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS), null, WRITEOFF_FIELDS, granularity, rowFilter);
+  const labels = trend.periods.map(p => p.label);
+  const pick = (p, f) => { const inner = trend.periodMap.get(p.key); const o = inner && inner.get('__ALL__'); return o ? (o[f] || 0) : 0; };
+  renderChart('writeoffTrendChart', dualAxisMoneyRightConfig(
+    labels, trend.periods.map(p => pick(p, 'count')), trend.periods.map(p => pick(p, 'loss_amount')),
+    '雑損 点数', '損失額', '件数'));
+
+  // カテゴリ別・拠点別
+  const cols = (nameLabel) => [
+    { name: nameLabel },
+    { name: '雑損 点数', formatter: c => fmtInt(c) },
+    { name: '損失額(円)', formatter: c => fmtYen(c) },
+    { name: '1点あたり(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) }
+  ];
+  [['category', 'カテゴリ', 'writeoffCatTable'], ['location', '拠点', 'writeoffLocTable']].forEach(([dim, label, id]) => {
+    const data = buildDimBreakdownGeneric(
+      (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS), dim, WRITEOFF_FIELDS, granularity, periodKey, rowFilter);
+    data.sort((a, b) => b.loss_amount - a.loss_amount);
+    renderSimpleTableInto(id, cols(label),
+      data.map(d => [d.name, d.count, d.loss_amount, d.count ? d.loss_amount / d.count : null]), 10);
+  });
+}
+
 function renderDeficitPage() {
   renderDeficitModeSummary();
   renderDeficitInsight();
@@ -3890,6 +4010,7 @@ function renderDeficitPage() {
   renderDeficitCategorySection();
   renderDeficitProcSection();
   renderDeficitCrossTab();
+  renderWriteoffSection();
   // 商品明細を開いたまま期間・拠点を変えたときは、同じカテゴリで中身を更新する
   if (deficitDrillCat) renderDeficitItemDrill(deficitDrillCat);
 }
@@ -4277,10 +4398,178 @@ function renderOverallPage() {
 }
 
 // ---------- 生成: ③全カテゴリページ ----------
+// ---------- ②全カテゴリ: 期間 × カテゴリ の推移比較マトリクス ----------
+// 「カテゴリ同士を比べながら、時系列の動きを見る」ための表とグラフ。
+// 件数系はそのまま合計し、率は分子・分母をそれぞれ合計してから割る(率の平均ではない)。
+const CAT_MATRIX_METRICS = {
+  refund_amount:  { label: '返金額',       kind: 'money', num: 'refund_amount',  den: null },
+  refund_rate:    { label: '返金額率',     kind: 'pct',   num: 'refund_amount',  den: 'sales_amount' },
+  sr_count:       { label: 'SR発生件数',   kind: 'int',   num: 'sr_count',       den: null },
+  sr_rate:        { label: 'SR率',         kind: 'pct',   num: 'sr_count',       den: 'shipped_count' },
+  question_count: { label: '質問数',       kind: 'int',   num: 'question_count', den: null },
+  question_rate:  { label: '質問率',       kind: 'pct',   num: 'question_count', den: 'listed_count' },
+  inquiry_count:  { label: '問合せ件数',   kind: 'int',   num: 'inquiry_count',  den: null },
+  inquiry_rate:   { label: '問合せ率',     kind: 'pct',   num: 'inquiry_count',  den: 'shipped_count' }
+};
+
+function renderCategoryMatrix() {
+  const wrap = document.getElementById('catMatrixTable');
+  if (!wrap) return;
+  const granularity = granSel.value;
+  const metricKey = (document.getElementById('catMatrixMetric') || {}).value || 'sr_rate';
+  const spec = CAT_MATRIX_METRICS[metricKey] || CAT_MATRIX_METRICS.sr_rate;
+  const topN = parseInt((document.getElementById('catMatrixTopN') || {}).value || '8', 10);
+  const span = parseInt((document.getElementById('catMatrixSpan') || {}).value || '18', 10);
+
+  const granLabel = { week: '週次', month: '月次', quarter: '四半期', half: '半期', all: '通期' }[granularity] || granularity;
+  const gl = document.getElementById('catMatrixGranLabel');
+  if (gl) gl.textContent = granLabel + ' / ' + spec.label;
+  const tt = document.getElementById('catMatrixTableTitle');
+  if (tt) tt.textContent = '期間 × カテゴリ 一覧（' + spec.label + '・' + granLabel + '）';
+
+  let periods = availablePeriods(granularity);
+  if (span < periods.length) periods = periods.slice(-span);
+  const periodIdx = new Map(periods.map((p, i) => [p.key, i]));
+
+  // カテゴリ × 期間 の分子・分母を貯める
+  const cats = new Map();  // category -> {num:[], den:[], numTotal, denTotal, ship}
+  const blank = () => ({ num: new Array(periods.length).fill(0), den: new Array(periods.length).fill(0), ship: 0 });
+  ROWS.forEach(r => {
+    const pk = periodKeyFor(r, granularity);
+    const i = periodIdx.get(pk.key);
+    if (i === undefined) return;
+    if (!cats.has(r.category)) cats.set(r.category, blank());
+    const o = cats.get(r.category);
+    o.num[i] += (r[spec.num] || 0);
+    if (spec.den) o.den[i] += (r[spec.den] || 0);
+    o.ship += (r.shipped_count || 0);
+  });
+  if (!cats.size || !periods.length) {
+    wrap.innerHTML = '<p class="note">表示できるデータがありません。</p>';
+    renderChart('catMatrixChart', { type: 'line', data: { labels: [], datasets: [] }, options: {} });
+    return;
+  }
+
+  const valueAt = (o, i) => {
+    if (spec.den) return o.den[i] ? o.num[i] / o.den[i] : null;
+    return o.num[i];
+  };
+  const totalOf = (o) => {
+    const n = o.num.reduce((a, v) => a + v, 0);
+    if (!spec.den) return n;
+    const d = o.den.reduce((a, v) => a + v, 0);
+    return d ? n / d : null;
+  };
+  const fmtVal = (v) => {
+    if (v === null || v === undefined) return '-';
+    if (spec.kind === 'pct') return fmtPct(v);
+    if (spec.kind === 'money') return fmtYen(v);
+    return fmtInt(v);
+  };
+
+  // 合計値の大きい順に並べる(率も合計基準)。
+  // ただし率の場合、母数が数件しかないカテゴリは「1件で50%」のような極端な値になり
+  // 上位を占めてしまうため、母数が MIN_DEN 未満のものは下にまとめる。
+  // 閾値は「全カテゴリの母数合計の0.5%」。母数が金額(売上)でも件数(出荷数・出品数)でも
+  // 同じ考え方で効くように、絶対値ではなく全体に対する比率で判定する。
+  const denTotal = (o) => o.den.reduce((a, v) => a + v, 0);
+  let MIN_DEN = 0;
+  if (spec.den) {
+    let sum = 0;
+    cats.forEach(o => { sum += denTotal(o); });
+    MIN_DEN = sum * 0.005;
+  }
+  const ordered = Array.from(cats.entries())
+    .map(([name, o]) => ({ name, o, total: totalOf(o), den: spec.den ? denTotal(o) : null }))
+    .sort((a, b) => {
+      if (spec.den) {
+        const am = a.den >= MIN_DEN, bm = b.den >= MIN_DEN;
+        if (am !== bm) return am ? -1 : 1;
+      }
+      return (b.total === null ? -1 : b.total) - (a.total === null ? -1 : a.total);
+    });
+
+  // ---- グラフ: 出荷数の多い上位カテゴリを折れ線で重ねる ----
+  const chartCats = Array.from(cats.entries())
+    .sort((a, b) => b[1].ship - a[1].ship)
+    .slice(0, topN)
+    .map(([name]) => name);
+  const datasets = chartCats.map((name, idx) => {
+    const o = cats.get(name);
+    const color = PALETTE[idx % PALETTE.length];
+    return {
+      label: name,
+      data: periods.map((p, i) => {
+        const v = valueAt(o, i);
+        return v === null ? null : (spec.kind === 'pct' ? v * 100 : v);
+      }),
+      borderColor: color, backgroundColor: color,
+      borderWidth: 2, pointRadius: 2, tension: 0.25, spanGaps: true
+    };
+  });
+  renderChart('catMatrixChart', {
+    type: 'line',
+    data: { labels: periods.map(p => p.label), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (c) => c.dataset.label + ': ' +
+              (spec.kind === 'pct' ? (c.parsed.y === null ? '-' : c.parsed.y.toFixed(2) + '%')
+                                   : fmtVal(c.parsed.y))
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: spec.label + (spec.kind === 'pct' ? ' (%)' : '') },
+          ticks: { callback: (v) => spec.kind === 'pct' ? v + '%' : (spec.kind === 'money' ? moneyTick(v) : v) }
+        }
+      }
+    }
+  });
+
+  // ---- 表: 行=カテゴリ / 列=期間 ----
+  let maxV = 0;
+  ordered.forEach(({ o }) => periods.forEach((p, i) => {
+    const v = valueAt(o, i); if (v != null && v > maxV) maxV = v;
+  }));
+  const bg = (v) => {
+    if (v == null || !(maxV > 0) || !(v > 0)) return '#fff';
+    return 'rgba(224,101,58,' + (0.05 + 0.45 * Math.min(1, v / maxV)).toFixed(3) + ')';
+  };
+  const th = 'padding:5px 8px;border:1px solid #e3e5e8;background:#f5f6f8;white-space:nowrap;font-size:11.5px;';
+  const td = 'padding:5px 8px;border:1px solid #e3e5e8;text-align:right;white-space:nowrap;font-size:11.5px;';
+  let html = '<table style="border-collapse:collapse;"><thead><tr>' +
+    '<th style="' + th + 'text-align:left;position:sticky;left:0;z-index:1;">カテゴリ</th>';
+  periods.forEach(p => { html += '<th style="' + th + '">' + p.label + '</th>'; });
+  html += '<th style="' + th + '">合計</th></tr></thead><tbody>';
+  ordered.forEach(({ name, o, total, den }) => {
+    const faint = (spec.den && den < MIN_DEN);
+    html += '<tr><td style="padding:5px 8px;border:1px solid #e3e5e8;white-space:nowrap;font-weight:600;'
+      + 'position:sticky;left:0;background:#fff;z-index:1;font-size:11.5px;'
+      + (faint ? 'color:#98a2ad;' : '') + '" title="'
+      + (spec.den ? '母数 合計 ' + fmtInt(den) : '') + '">' + name
+      + (faint ? ' <span style="font-weight:400;font-size:10px;">(母数少)</span>' : '') + '</td>';
+    periods.forEach((p, i) => {
+      const v = valueAt(o, i);
+      const tip = spec.den ? (fmtInt(o.num[i]) + ' / ' + fmtInt(o.den[i])) : '';
+      html += '<td style="' + td + 'background:' + bg(v) + ';" title="' + tip + '">' + fmtVal(v) + '</td>';
+    });
+    html += '<td style="' + td + 'background:#f5f6f8;font-weight:700;">' + fmtVal(total) + '</td></tr>';
+  });
+  wrap.innerHTML = html + '</tbody></table>';
+}
+
 function renderAllCategoryPage() {
   renderInsights();
   const granularity = granSel.value, periodKey = periodSel.value;
   renderYoyBox('yoyBoxAllCategory', 'yoyTableAllCategory', 'yoyPeriodLabelAllCategory', granularity, periodKey, null);
+  renderCategoryMatrix();
   renderCategoryBreakdown();
   renderCategorySrMajorChart();
   renderDetailTable('category');
@@ -4711,6 +5000,11 @@ if (detailCatMultiSel) detailCatMultiSel.addEventListener('change', () => { if (
 
 if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
 {
+  // ②全カテゴリ: 期間×カテゴリ マトリクスのセレクタ(この表だけ描き直せばよい)
+  ['catMatrixMetric', 'catMatrixTopN', 'catMatrixSpan'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => { if (currentPage === 'allcategory') renderCategoryMatrix(); });
+  });
   const dm = document.getElementById('deficitMode');
   if (dm) dm.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
   // クロス集計の指標切替は、その表だけを描き直せばよい
@@ -4719,7 +5013,8 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 }
 
 document.getElementById('subHeader').textContent =
-  DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ');
+  DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
+  + '　[ビルド __BUILD_STAMP__ / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 renderAll();
@@ -4729,6 +5024,10 @@ renderAll();
 '''
 
 html = html.replace('__DATA_JSON_GZ_B64__', data_json_gz_b64)
+
+# 「どのビルドを見ているか」をヘッダーに出す。表示が古いまま更新されていないときの切り分け用。
+import datetime as _dt
+html = html.replace('__BUILD_STAMP__', _dt.datetime.now().strftime('%m/%d %H:%M'))
 
 out_path = 'cs_sr_dashboard.html'
 with open(out_path, 'w', encoding='utf-8') as f:

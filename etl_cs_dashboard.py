@@ -2162,7 +2162,8 @@ DEFICIT_COLUMNS = [
     # location は⑧赤字ページの拠点フィルタ用に追加した次元(build_shukka_detail が持つ
     # location をそのまま引き継ぐだけで、赤字判定・金額計算のロジックは一切変えていない)。
     "week_start", "week_end", "year_month", "location", "category", "procurement_type",
-    "count", "total_deficit", "avg_deficit_per_item", "shipping_fee_total", "return_shipping_total",
+    "count", "total_deficit", "avg_deficit_per_item", "shipping_fee_total",
+    "lost_shipping_total", "return_shipping_total", "returned_count",
 ]
 
 
@@ -2197,26 +2198,27 @@ def aggregate_deficit_modes(
 ) -> pd.DataFrame:
     """⑦赤字ページ用に、2つの見方の損益を1商品ごとに算出する。
 
-    ① 会計上の粗利  = 落札価格 - 買取価格/1.1
+    ① 粗利損        = 落札価格 - 買取価格/1.1
          仕入と売価の差だけを見る、経理的な粗利。送料や返送料は含めない。
-    ② 最終利益      = 落札価格 - 買取価格/1.1 (- 返品ありなら返送料/1.1)
-         実際に手元に残る利益。発送時の送料はお客様からお預かりした額をそのまま
-         配送業者に支払うため当社の持ち出しにならず、差し引かない
-         (厳密には契約送料との差額が利益になるが、ここでは利益として考慮しない)。
-         返品時の返送料は当社負担になるため差し引く。
+    ② 最終利益      = 落札価格 - 買取価格/1.1
+                      - 返品ありなら (発送送料/1.1 + 返送料/1.1)
+         実際に手元に残る利益。送料の扱いは運用実態に合わせて次のとおり(2026-08 確認):
+           ・返品されなかった商品
+               お客様から受け取った送料をそのまま配送業者に支払うので損益ゼロ。
+               したがって発送送料は差し引かない。
+           ・返品された商品
+               受け取った送料はお客様に返金するが、配送業者への支払いは戻ってこない。
+               さらに返送料も当社負担になる。よって発送送料と返送料の両方が損失になる。
 
     【返品→再出品→再販が同一期間内に起きた場合】
       商品_出荷(JPONベース)は同じ商品IDが再出現するため concat_and_dedup で
       「最後に現れた行(=再販時の落札価格)」を採用している。したがって落札価格は
-      自動的に最終的な販売価格になる。送料は「最終の発送1回分」のみを計上する
-      (運用確認: 発送時の送料はお客様負担で、受け取った送料をそのまま配送業者に
-       支払うため当社の持ち出しにならない。厳密には契約送料との差額が利益になるが、
-       ここでは利益として考慮しない)。
+      自動的に最終的な販売価格になる。送料は「最終の発送1回分」のみを計上する。
 
       例) 買取10,000円・最終落札13,000円・送料2,440円(税込)の場合
           粗利損の判定 = 13,000 - 9,091 = 3,909円 (プラスなので粗利損ではない)
-          最終利益     = 13,000 - 9,091 = 3,909円 (返品なしなら発送送料は引かない)
-          返品があった場合のみ、返送料(税抜)をさらに差し引く
+          最終利益(返品なし) = 13,000 - 9,091 = 3,909円
+          最終利益(返品あり) = 13,000 - 9,091 - 2,218(発送送料税抜) - 返送料/1.1
     """
     if detail.empty:
         return pd.DataFrame()
@@ -2230,11 +2232,109 @@ def aggregate_deficit_modes(
         return to_excl_tax(info[1]) if info else 0.0
 
     d["return_shipping_amount"] = d["norm_product_id"].map(_return_ship)
+    # 返品された商品かどうか(発送送料を損失として扱うかの判定に使う)
+    d["is_returned"] = d["norm_product_id"].map(
+        lambda nid: bool(nid) and nid in return_ids
+    )
+    # 返品された商品だけ、発送送料も損失になる(お客様に返金するが配送業者への支払は戻らない)。
+    # shipping_fee は build_shukka_detail 時点で税抜換算済み。
+    d["lost_shipping_amount"] = d["shipping_fee"].where(d["is_returned"], 0.0)
     # actual_profit は既に 落札価格 - 買取価格/1.1 (税抜)
     d["accounting_profit"] = d["actual_profit"]
-    # shipping_fee は build_shukka_detail 時点で税抜換算済み
-    d["final_profit_item"] = d["actual_profit"] - d["return_shipping_amount"]
+    d["final_profit_item"] = (
+        d["actual_profit"] - d["lost_shipping_amount"] - d["return_shipping_amount"]
+    )
     return d
+
+
+# ---------------------------------------------------------------------------
+# 雑損(返品されたが再販不可と判断され、商品V2で「雑損」ステータスになった商品)
+# ---------------------------------------------------------------------------
+# 雑損になると売上はゼロで買取価格がまるごと損失になるため、赤字商品とは別枠で
+# 件数・出荷比率・損失額(買取価格の税抜)を集計する。
+WRITEOFF_STATUS = "雑損"
+
+WRITEOFF_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "procurement_type",
+    "count", "loss_amount", "buy_price_total",
+]
+
+
+def build_writeoff_rows(
+    weeks: list[WeekFiles], ship_date_master: Optional[dict[str, str]] = None
+) -> list[dict]:
+    """進捗が「雑損」の商品を、日次×拠点×カテゴリ×仕入れ方法で集計する。
+
+    データ源は 商品_出荷(JPONベース) と 商品_出品待 の両方。同じ商品IDが複数週の
+    ファイルに現れるため concat_and_dedup で最後の行(=最新のステータス)を採用する。
+
+    損失額は買取価格(税込)を税抜に換算した額。再販できないため売上は立たず、
+    仕入に払った金額がそのまま損失になるという運用実態に合わせている。
+
+    期間キーは他ページと揃えるため出荷予定日(ship_date_master)を優先し、
+    引けない場合は「発送」→「落札」→週フォルダ終了日の順にフォールバックする。
+    """
+    frames = []
+    for w in weeks:
+        for key in ("shohin_shukka", "shohin_shuppinmachi"):
+            raw = w.files.get(key)
+            if raw is None:
+                continue
+            df = read_csv_bytes(raw)
+            if "進捗" not in df.columns or "商品ID" not in df.columns:
+                continue
+            sub = df[df["進捗"].fillna("").astype(str).str.strip() == WRITEOFF_STATUS]
+            if len(sub):
+                frames.append(tag_week(sub, w))
+    if not frames:
+        return []
+
+    all_df = concat_and_dedup(frames, id_col="商品ID")
+    all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+    if all_df.empty:
+        return []
+
+    all_df["location"] = all_df["拠点"].fillna("(不明)")
+    all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
+    all_df["procurement_type"] = (
+        all_df["種別"].fillna("不明").astype(str).str.strip().replace("", "不明")
+        if "種別" in all_df.columns else "不明"
+    )
+    all_df["norm_product_id"] = all_df["商品ID"].map(normalize_product_id)
+    all_df["買取価格_num"] = to_numeric(all_df["買取価格"])
+    all_df["loss_amount"] = to_excl_tax(all_df["買取価格_num"])
+
+    ship_date_master = ship_date_master or {}
+    ymd = all_df["norm_product_id"].map(lambda nid: ship_date_master.get(nid) if nid else None)
+    ymd = pd.Series(ymd, index=all_df.index)
+    for col in ("発送", "落札"):
+        if col in all_df.columns:
+            ymd = ymd.fillna(pd.to_datetime(all_df[col], errors="coerce").dt.strftime("%Y-%m-%d"))
+    ymd = ymd.fillna(all_df["_week_end"])
+    all_df["week_start"] = ymd
+    all_df["week_end"] = ymd
+    all_df["year_month"] = ymd.str.slice(0, 7)
+    all_df = all_df[all_df["week_start"].notna()].copy()
+    if all_df.empty:
+        return []
+
+    grouped = (
+        all_df.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
+        .agg(count=("loss_amount", "size"),
+             loss_amount=("loss_amount", "sum"),
+             buy_price_total=("買取価格_num", "sum"))
+        .reset_index()
+    )
+    return [
+        {
+            **{c: r[c] for c in ["week_start", "week_end", "year_month",
+                                 "location", "category", "procurement_type"]},
+            "count": int(r["count"]),
+            "loss_amount": _safe_float(r["loss_amount"]),
+            "buy_price_total": _safe_float(r["buy_price_total"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
 
 
 DEFICIT_MODE_COLUMNS = [
@@ -2242,7 +2342,8 @@ DEFICIT_MODE_COLUMNS = [
     "shipped_count",
     "acc_deficit_count", "acc_deficit_amount", "acc_profit_sum",
     "fin_deficit_count", "fin_deficit_amount", "fin_profit_sum",
-    "shipping_fee_total", "return_shipping_total",
+    "shipping_fee_total", "lost_shipping_total", "return_shipping_total",
+    "returned_count",
 ]
 
 
@@ -2268,7 +2369,9 @@ def build_deficit_mode_rows(
             fin_deficit_amount=("fin_deficit_amount", "sum"),
             fin_profit_sum=("final_profit_item", "sum"),
             shipping_fee_total=("shipping_fee", "sum"),
+            lost_shipping_total=("lost_shipping_amount", "sum"),
             return_shipping_total=("return_shipping_amount", "sum"),
+            returned_count=("is_returned", "sum"),
         )
         .reset_index()
     )
@@ -2283,7 +2386,9 @@ def build_deficit_mode_rows(
             "fin_deficit_amount": _safe_float(r["fin_deficit_amount"]),
             "fin_profit_sum": _safe_float(r["fin_profit_sum"]),
             "shipping_fee_total": _safe_float(r["shipping_fee_total"]),
+            "lost_shipping_total": _safe_float(r["lost_shipping_total"]),
             "return_shipping_total": _safe_float(r["return_shipping_total"]),
+            "returned_count": int(r["returned_count"]),
         }
         for _, r in grouped.iterrows()
     ]
@@ -2300,7 +2405,7 @@ ITEM_DETAIL_COLUMNS = [
     "price_band", "price_band_sort", "procurement_type", "buyer", "product_id",
     "buy_price", "expected_price", "sale_price",
     "expected_profit", "actual_profit", "variance",
-    "return_shipping", "final_profit",
+    "lost_shipping", "return_shipping", "final_profit",
     "sr_count", "sr_major", "sr_minor", "cause_major", "cause_part",
     "refund_amount", "returned",
 ]
@@ -2437,6 +2542,7 @@ def build_item_detail_rows(
             "expected_profit": _safe_float(r["expected_profit"]),
             "actual_profit": _safe_float(r["actual_profit"]),
             "variance": _safe_float(r["variance"]),
+            "lost_shipping": _safe_float(r["lost_shipping_amount"]),
             "return_shipping": _safe_float(r["return_shipping_amount"]),
             "final_profit": _safe_float(r["final_profit_item"]),
             "sr_count": int(sr["sr_count"]),
@@ -2456,36 +2562,27 @@ def aggregate_deficit(
 ) -> pd.DataFrame:
     """赤字(原価割れ)商品を週×カテゴリ×procurement_type(仕入れ方法)で集計する。
 
-    赤字の定義: 最終利益(actual_profit - 返品時の返送料/1.1) が0未満の商品。
-    発送時の送料はお客様負担で当社の持ち出しにならないため差し引かない。
-    加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の
-    返送料(cost_masterのヤフオク配送料)も追加で赤字額に加算する
-    (aggregate_refund の返送料ロジックを参考に、赤字商品側にも同じ基準で反映する)。
+    赤字の定義: 最終利益が0未満の商品。最終利益の定義は aggregate_deficit_modes と同じで
+        落札価格 - 買取価格/1.1 - (返品ありなら 発送送料/1.1 + 返送料/1.1)
+    返品されなかった商品の発送送料は、お客様から受け取った額をそのまま配送業者に支払う
+    ので損益ゼロとみなし差し引かない。返品された商品は送料をお客様に返金する一方で
+    配送業者への支払は戻らないため、発送送料と返送料の両方を損失として差し引く。
 
-    total_deficit は正の値=赤字の大きさとして統一する
-    (赤字方向の金額の絶対値 + 返品時の追加返送料)。
+    total_deficit は正の値=赤字の大きさとして統一する(最終利益の絶対値)。
     """
     if detail.empty:
         return pd.DataFrame(columns=DEFICIT_COLUMNS)
 
-    d = detail.copy()
-    # 発送送料は差し引かない(お客様負担のため)。返送料のみ後段で加算する。
-    d["net_profit"] = d["actual_profit"]
+    # 損益の定義は aggregate_deficit_modes の「最終利益」と完全に揃える。
+    #   最終利益 = 落札価格 - 買取価格/1.1 - (返品ありなら 発送送料/1.1 + 返送料/1.1)
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return pd.DataFrame(columns=DEFICIT_COLUMNS)
+    d["net_profit"] = d["final_profit_item"]
     deficit = d[d["net_profit"] < 0].copy()
     if deficit.empty:
         return pd.DataFrame(columns=DEFICIT_COLUMNS)
-
-    return_ids = build_return_product_ids(weeks)
-
-    def _return_ship(norm_id):
-        # 返送料はヤフオク配送料そのもの(税込)なので、税抜に換算して赤字額に加える
-        if not norm_id or norm_id not in return_ids:
-            return 0.0
-        info = cost_master.get(norm_id)
-        return to_excl_tax(info[1]) if info else 0.0
-
-    deficit["return_shipping_amount"] = deficit["norm_product_id"].map(_return_ship)
-    deficit["deficit_amount"] = (-deficit["net_profit"]) + deficit["return_shipping_amount"]
+    deficit["deficit_amount"] = -deficit["net_profit"]
 
     grouped = (
         deficit.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
@@ -2493,7 +2590,9 @@ def aggregate_deficit(
             count=("net_profit", "size"),
             total_deficit=("deficit_amount", "sum"),
             shipping_fee_total=("shipping_fee", "sum"),
+            lost_shipping_total=("lost_shipping_amount", "sum"),
             return_shipping_total=("return_shipping_amount", "sum"),
+            returned_count=("is_returned", "sum"),
         )
         .reset_index()
     )
@@ -2522,7 +2621,9 @@ def build_deficit_rows(
             "total_deficit": _safe_float(r["total_deficit"]),
             "avg_deficit_per_item": _safe_float(r["avg_deficit_per_item"]),
             "shipping_fee_total": _safe_float(r["shipping_fee_total"]),
+            "lost_shipping_total": _safe_float(r["lost_shipping_total"]),
             "return_shipping_total": _safe_float(r["return_shipping_total"]),
+            "returned_count": int(r["returned_count"]),
         }
         for _, r in df.iterrows()
     ]

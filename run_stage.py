@@ -198,6 +198,10 @@ def run_stage(stage: str):
         dm = m.build_deficit_mode_rows(weeks, detail, cost_master)
         print(f"  損益2軸(会計上の粗利/最終利益): {len(dm):,}行", flush=True)
         save("deficit_mode_rows", dm)
+        ship_date_master = load("ship_date_master") if has("ship_date_master") else None
+        wo = m.build_writeoff_rows(weeks, ship_date_master)
+        print(f"  雑損: {len(wo):,}行", flush=True)
+        save("writeoff_rows", wo)
         stats_item = m.ExclusionStats()
         item = m.build_item_detail_rows(weeks, detail, cost_master, stats_item)
         print(f"  商品明細(赤字＋SR発生): {len(item):,}行", flush=True)
@@ -281,22 +285,24 @@ def run_stage(stage: str):
         deficit_rows = load("deficit_rows")
         deficit_mode_rows = load("deficit_mode_rows") if has("deficit_mode_rows") else []
         item_detail_rows = load("item_detail_rows") if has("item_detail_rows") else []
+        writeoff_rows = load("writeoff_rows") if has("writeoff_rows") else []
         customer_segment_rows = load("customer_segment_rows") if has("customer_segment_rows") else []
         customer_detail_rows = load("customer_detail_rows") if has("customer_detail_rows") else []
 
         stats = m.ExclusionStats()
-        stats.cs_rows = load("stats_cs_sr")
-        stats.henkin_rows = load("stats_henkin")
-        stats.shitsumon_rows = load("stats_shitsumon")
-        stats.juchu_rows = load("stats_juchu")
-        stats.shuppinmachi_rows = load("stats_shuppinmachi")
-        stats.shukka_rows = load("stats_shukka")
+        _ld = lambda n: (load(n) if has(n) else 0)
+        stats.cs_rows = _ld("stats_cs_sr")
+        stats.henkin_rows = _ld("stats_henkin")
+        stats.shitsumon_rows = _ld("stats_shitsumon")
+        stats.juchu_rows = _ld("stats_juchu")
+        stats.shuppinmachi_rows = _ld("stats_shuppinmachi")
+        stats.shukka_rows = _ld("stats_shukka")
         # 「スルー」除外は aggregate_cs_sr/aggregate_sr_major/aggregate_cause の3ステージそれぞれで
         # 独立した ExclusionStats インスタンスを使っているため、3つの保存値を合算する
         # (main()側は単一のstatsインスタンスを使い回すため自然に合算されるが、
         # run_stage.py はステージごとに別インスタンスなのでここで明示的に合算する)。
         stats.through_rows = (
-            load("stats_through_cs_sr") + load("stats_through_sr_major") + load("stats_through_cause")
+            _ld("stats_through_cs_sr") + _ld("stats_through_sr_major") + _ld("stats_through_cause")
         )
 
         m.print_monthly_summary(merged)
@@ -338,13 +344,16 @@ def run_stage(stage: str):
             "deficit_rows": deficit_rows,
             "deficit_mode_rows": deficit_mode_rows,
             "item_detail_rows": item_detail_rows,
+            "writeoff_rows": writeoff_rows,
             "customer_segment_rows": customer_segment_rows,
             "customer_detail_rows": customer_detail_rows,
             "insights": m.STATIC_INSIGHTS,
         }
 
         out_path = Path(str(Path(__file__).resolve().parent / "cs_sr_dashboard_data.json"))
-        out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        # indent付きだと数百MBの文字列をメモリ上に作ることになるため、ファイルへ直接書き出す
+        with open(out_path, "w", encoding="utf-8") as _f:
+            json.dump(output, _f, ensure_ascii=False, separators=(",", ":"))
         print(f"\n[INFO] 出力完了: {out_path} (rows={len(rows)})", flush=True)
 
         print(f"[INFO] 検出した週フォルダ数: {len(weeks)}", flush=True)

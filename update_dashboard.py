@@ -88,6 +88,10 @@ def collect_21st(backend) -> dict:
         # ⑦赤字ページの「粗利損 / 最終利益」2軸集計。出荷点数の母数もここに入っているため、
         # これを作り忘れると赤字率や出荷商品数が0で表示される。
         "deficit_mode_rows": m.build_deficit_mode_rows(weeks, detail, cost_master),
+        # ⑦のカテゴリをクリックしたときに開く、商品1件ごとの明細(赤字商品＋SR発生商品)
+        "item_detail_rows": m.build_item_detail_rows(weeks, detail, cost_master, stats),
+        # ⑦の雑損(返品後に再販不可と判断され、商品V2で「雑損」になった商品)
+        "writeoff_rows": m.build_writeoff_rows(weeks, ship_date_master),
         # ⑥粗利差異ページの、コンディション別・価格帯別の上振れ/下振れ分解
         "variance_condition_rows": m.build_variance_breakdown_rows(detail, "condition"),
         "variance_band_rows": m.build_variance_breakdown_rows(detail, "price_band"),
@@ -106,17 +110,23 @@ def main():
     ap.add_argument("--local-dir", default="drive_cache", help="localモードで読むディレクトリ")
     ap.add_argument("--frozen", default="data_20th_frozen.json.gz")
     ap.add_argument("--output", default="cs_sr_dashboard_data.json")
+    ap.add_argument("--use-21", default=None,
+                    help="--dump-21 で書き出した21期の集計結果を読み込んで使う"
+                         "(集計をやり直さずに結合とHTML生成だけ試したいときに使う)")
     ap.add_argument("--dump-21", default=None,
                     help="21期だけを集計した結果をこのパスに書き出して終了する"
                          "(freeze_20th.py の --live21 に渡して凍結データを作り直すときに使う)")
     args = ap.parse_args()
 
-    if args.mode == "drive":
-        backend = m.LiveDriveBackend(args.credentials)
+    if args.use_21:
+        new = json.loads(Path(args.use_21).read_text(encoding="utf-8"))
+        print(f"[INFO] 21期の集計結果を読み込みました: {args.use_21}", flush=True)
     else:
-        backend = m.LocalCacheDriveBackend(args.local_dir, FY21_ROOT_ID)
-
-    new = collect_21st(backend)
+        if args.mode == "drive":
+            backend = m.LiveDriveBackend(args.credentials)
+        else:
+            backend = m.LocalCacheDriveBackend(args.local_dir, FY21_ROOT_ID)
+        new = collect_21st(backend)
 
     if args.dump_21:
         Path(args.dump_21).write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
