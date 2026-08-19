@@ -4985,15 +4985,13 @@ function setPage(page) {
   renderPageContent();
 }
 
-document.getElementById('navBtnOverall').addEventListener('click', () => setPage('overall'));
-document.getElementById('navBtnDetail').addEventListener('click', () => setPage('detail'));
-document.getElementById('navBtnAllCategory').addEventListener('click', () => setPage('allcategory'));
-document.getElementById('navBtnPriceBand').addEventListener('click', () => setPage('priceband'));
-document.getElementById('navBtnCondition').addEventListener('click', () => setPage('condition'));
-document.getElementById('navBtnProfitVariance').addEventListener('click', () => setPage('profitvariance'));
-
-document.getElementById('navBtnDeficit').addEventListener('click', () => setPage('deficit'));
-document.getElementById('navBtnCustomer').addEventListener('click', () => setPage('customer'));
+// ページ切替ボタンの登録は PAGE_NAV_MAP から自動で行う。
+// (以前はボタンごとに手書きしていたため、ページを追加したときに登録漏れが起きた)
+Object.keys(PAGE_NAV_MAP).forEach(page => {
+  const btn = document.getElementById(PAGE_NAV_MAP[page]);
+  if (btn) btn.addEventListener('click', () => setPage(page));
+  else console.warn('ページ切替ボタンが見つかりません:', page, PAGE_NAV_MAP[page]);
+});
 ['custMinShipped', 'custMinSr', 'custType'].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', () => { if (currentPage === 'customer') renderCustomerPage(); });
