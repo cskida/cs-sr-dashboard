@@ -590,6 +590,31 @@ def normalize_product_id(pid) -> Optional[str]:
     return s or None
 
 
+def to_datetime_any(values) -> pd.Series:
+    """日付列を書式混在でも取りこぼさずに変換する。
+
+    週次エクスポートの日付書式は運用の途中で変わることがある。
+      旧: 2025/7/1 0:00
+      新: 2026-08-13 00:00:00
+    pandas の to_datetime は、列全体から1つの書式を推定してから適用するため、
+    複数週のファイルを結合したあとに変換すると「推定した書式と違う行」がすべて
+    NaT になる。実データでは、これにより新書式の週(2026-08-13〜16)の出荷が
+    丸ごと集計から落ちる不具合が起きた。
+
+    そこで format="mixed" で行ごとに書式を判定し、それでも解釈できなかった行は
+    通常の推定でもう一度試す。どちらでも読めない行だけ NaT になる。
+    """
+    ser = values if isinstance(values, pd.Series) else pd.Series(values)
+    try:
+        dt = pd.to_datetime(ser, errors="coerce", format="mixed")
+    except (TypeError, ValueError):
+        dt = pd.to_datetime(ser, errors="coerce")
+    if dt.isna().any():
+        retry = pd.to_datetime(ser[dt.isna()], errors="coerce")
+        dt = dt.fillna(retry)
+    return dt
+
+
 def to_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(
         series.astype(str).str.replace(",", "", regex=False).str.strip(),
@@ -598,7 +623,7 @@ def to_numeric(series: pd.Series) -> pd.Series:
 
 
 def to_year_month(series: pd.Series) -> pd.Series:
-    dt = pd.to_datetime(series, errors="coerce")
+    dt = to_datetime_any(series)
     return dt.dt.strftime("%Y-%m")
 
 
@@ -612,7 +637,7 @@ def tag_by_date(df: pd.DataFrame, w: "WeekFiles", date_col: str) -> pd.DataFrame
     基準日が空/不正な行は NaN になり、各集計関数の既存の有効日フィルタで除外される。
     """
     df = df.copy()
-    dt = pd.to_datetime(df[date_col], errors="coerce")
+    dt = to_datetime_any(df[date_col])
     ds = dt.dt.strftime("%Y-%m-%d")
     df["_week_start"] = ds
     df["_week_end"] = ds
@@ -773,7 +798,7 @@ def build_ship_date_master(weeks: list[WeekFiles]) -> dict[str, str]:
     merged = jsub.merge(tsub, left_on="取引番号", right_on="受注ID", how="inner")
     merged["_norm_id"] = merged["管理番号"].map(normalize_product_id)
     merged = merged.dropna(subset=["_norm_id"])
-    dt = pd.to_datetime(merged["_ship_date"], errors="coerce")
+    dt = to_datetime_any(merged["_ship_date"])
     merged["_ship_ymd"] = dt.dt.strftime("%Y-%m-%d")
     merged = merged.dropna(subset=["_ship_ymd"])
     dedup = merged.drop_duplicates(subset=["_norm_id"], keep="first")
@@ -914,7 +939,7 @@ def aggregate_cs_sr(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFra
     all_df = all_df[~through_mask].copy()
 
     # 登録日時が有効な行のみを対象とする(基準日そのものは週フォルダの範囲を採用)
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
@@ -1044,7 +1069,7 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     stats.through_rows += int(through_mask.sum())
     all_df = all_df[~through_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
 
     # 種別=SR の行のみを対象とする(CS種別はSR分類の内訳に含めない)
@@ -1089,7 +1114,7 @@ def aggregate_cause_from_refund(weeks: list[WeekFiles]) -> pd.DataFrame:
 
     all_df = concat_and_dedup(frames, id_col="CS ID")
     all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
-    all_df = all_df[pd.to_datetime(all_df["返金日"], errors="coerce").notna()].copy()
+    all_df = all_df[to_datetime_any(all_df["返金日"]).notna()].copy()
     parsed = all_df["管理用メモ"].map(parse_memo_cause)
     all_df["cause_major"] = parsed.map(lambda t: t[0])
     all_df["cause_part"] = parsed.map(lambda t: t[1]).fillna("(不明)")
@@ -1136,7 +1161,7 @@ def aggregate_cause(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFra
     stats.through_rows += int(through_mask.sum())
     all_df = all_df[~through_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
@@ -1178,7 +1203,7 @@ def aggregate_refund(
     stats.henkin_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["返金日"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["返金日"]).notna()
     skipped_no_date = int((~valid_date).sum())
     if skipped_no_date:
         print(f"[警告] CS_返金: 返金日が空/不正のため集計対象外とした行数 = {skipped_no_date}")
@@ -1286,7 +1311,7 @@ def aggregate_question(
     stats.shitsumon_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["category"].fillna("不明")
@@ -1351,7 +1376,7 @@ def aggregate_shipped_and_sales(
     merged = merged[~excluded_mask].copy()
 
     # 出荷予定日が有効な行のみを対象とする(基準日そのものは週フォルダの範囲を採用)
-    valid_date = pd.to_datetime(merged["出荷予定日"], errors="coerce").notna()
+    valid_date = to_datetime_any(merged["出荷予定日"]).notna()
     merged = merged[valid_date].copy()
 
     merged["location"] = merged["拠点"].fillna("(不明)")
@@ -1402,7 +1427,7 @@ def aggregate_listed(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFr
     stats.shuppinmachi_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["出品待"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["出品待"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
@@ -1526,7 +1551,7 @@ def build_shukka_detail(
     ship_date_master = ship_date_master or {}
     ymd = all_df["norm_product_id"].map(lambda nid: ship_date_master.get(nid) if nid else None)
     ymd = pd.Series(ymd, index=all_df.index)
-    fb_win = pd.to_datetime(all_df["落札"], errors="coerce").dt.strftime("%Y-%m-%d")
+    fb_win = to_datetime_any(all_df["落札"]).dt.strftime("%Y-%m-%d")
     ymd = ymd.fillna(fb_win).fillna(all_df["_week_end"])
     all_df["_week_start"] = ymd
     all_df["_week_end"] = ymd
@@ -1553,8 +1578,8 @@ def build_shukka_detail(
     all_df["shipping_fee"] = to_excl_tax(all_df["shipping_fee"])
 
     # リードタイム = 落札日 - 買取日(日数)。いずれかが不正な日付の場合はNaN。
-    buy_dt = pd.to_datetime(all_df["買取"], errors="coerce")
-    win_dt = pd.to_datetime(all_df["落札"], errors="coerce")
+    buy_dt = to_datetime_any(all_df["買取"])
+    win_dt = to_datetime_any(all_df["落札"])
     all_df["lead_days"] = (win_dt - buy_dt).dt.days
 
     # ⑦赤字ページの商品明細で「誰が買い取った商品か」を出すための担当者名。
@@ -1669,7 +1694,7 @@ def aggregate_condition_price_metrics(
         df = concat_and_dedup(frames, id_col="CS ID")
         df = df[~df["拠点"].map(is_excluded_location)]
         df = df[df["ステータス"].fillna("").astype(str).str.strip() != "スルー"]
-        df = df[pd.to_datetime(df["登録"], errors="coerce").notna()].copy()
+        df = df[to_datetime_any(df["登録"]).notna()].copy()
         df["location"] = df["拠点"].fillna("(不明)")
         df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
         df = _attach_attrs(df, attr_master)
@@ -1687,7 +1712,7 @@ def aggregate_condition_price_metrics(
     if frames:
         df = concat_and_dedup(frames, id_col="CS ID")
         df = df[~df["拠点"].map(is_excluded_location)]
-        df = df[pd.to_datetime(df["返金日"], errors="coerce").notna()].copy()
+        df = df[to_datetime_any(df["返金日"]).notna()].copy()
         df["location"] = df["拠点"].fillna("(不明)")
         df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
         df = _attach_attrs(df, attr_master)
@@ -1704,7 +1729,7 @@ def aggregate_condition_price_metrics(
     if frames:
         df = concat_and_dedup(frames, id_col="質問ID")
         df = df[~df["拠点"].map(is_excluded_location)]
-        df = df[pd.to_datetime(df["登録"], errors="coerce").notna()].copy()
+        df = df[to_datetime_any(df["登録"]).notna()].copy()
         df["location"] = df["拠点"].fillna("(不明)")
         df = _attach_attrs(df, attr_master)
         if "カテゴリ" in df.columns:
@@ -1723,7 +1748,7 @@ def aggregate_condition_price_metrics(
     if frames:
         df = concat_and_dedup(frames, id_col="商品ID")
         df = df[~df["拠点"].map(is_excluded_location)]
-        df = df[pd.to_datetime(df["出品待"], errors="coerce").notna()].copy()
+        df = df[to_datetime_any(df["出品待"]).notna()].copy()
         df["location"] = df["拠点"].fillna("(不明)")
         df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
         df["condition"] = df["状態"].map(normalize_condition)
@@ -2309,7 +2334,7 @@ def build_writeoff_rows(
     ymd = pd.Series(ymd, index=all_df.index)
     for col in ("発送", "落札"):
         if col in all_df.columns:
-            ymd = ymd.fillna(pd.to_datetime(all_df[col], errors="coerce").dt.strftime("%Y-%m-%d"))
+            ymd = ymd.fillna(to_datetime_any(all_df[col]).dt.strftime("%Y-%m-%d"))
     ymd = ymd.fillna(all_df["_week_end"])
     all_df["week_start"] = ymd
     all_df["week_end"] = ymd

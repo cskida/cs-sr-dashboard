@@ -206,7 +206,12 @@ html = r'''<!DOCTYPE html>
   .table-section { margin-bottom:20px; width:100%; overflow-x:auto; }
   .table-section table { font-size:12px; }
   .detail-table { font-size:12px; width:100%; }
-  .detail-table th, .detail-table td { white-space: normal !important; word-break: break-word; vertical-align: top; min-width:88px; }
+  .detail-table th, .detail-table td { white-space: normal !important; word-break: break-word; vertical-align: middle; min-width:88px; }
+  /* ヒートマップの色をセル全面に広げるため、Grid.jsの既定パディング(12px 24px)を詰める。
+     heatCell() 側の負マージンと数値を合わせている。 */
+  .detail-table .gridjs-td { padding:7px 10px !important; }
+  .detail-table .gridjs-th { padding:7px 10px !important; }
+  .heat-fill { display:block; margin:-7px -10px; padding:7px 10px; text-align:right; }
   .detail-table th:first-child, .detail-table td:first-child { min-width:110px; }
   .detail-table th { line-height:1.3; }
   .gridjs-wrapper { width:100% !important; }
@@ -233,7 +238,7 @@ html = r'''<!DOCTYPE html>
 <div class="page-nav">
   <button class="page-nav-btn active" id="navBtnOverall" type="button">① 全拠点</button>
   <button class="page-nav-btn" id="navBtnAllCategory" type="button">② 全カテゴリ</button>
-  <button class="page-nav-btn" id="navBtnCatDetail" type="button">③ カテゴリ詳細(SR改善分析)</button>
+  <button class="page-nav-btn" id="navBtnCatDetail" type="button">③ カテゴリ詳細</button>
   <button class="page-nav-btn" id="navBtnDetail" type="button">④ 拠点×カテゴリ</button>
   <button class="page-nav-btn" id="navBtnCondition" type="button">⑤ コンディション</button>
   <button class="page-nav-btn" id="navBtnPriceBand" type="button">⑥ 価格帯</button>
@@ -365,9 +370,6 @@ html = r'''<!DOCTYPE html>
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="ovMinorChart"></canvas></div>
   <div class="card table-section cause-pivot"><div id="ovMinorTable"></div></div>
-
-  <h2>小項目別の推移</h2>
-  <div class="card major-chart-card"><canvas id="ovMinorTrend"></canvas></div>
 
   <h2>原因分類 × 原因元</h2>
   <div class="card table-section"><div id="ovCauseCross"></div></div>
@@ -633,11 +635,11 @@ html = r'''<!DOCTYPE html>
 
 </div>
 
-<!-- ============ ③ カテゴリ詳細(SR改善分析)ページ ============ -->
+<!-- ============ ③ カテゴリ詳細ページ ============ -->
 <!-- ②全カテゴリページから切り出したSR改善分析。カテゴリを選んで絞り込める。 -->
 <div class="page-section" id="page-catdetail">
 
-  <p class="drill-title"><span id="acDrillTitle">SR改善分析 ― 全カテゴリ</span> <span id="acImpPeriod" class="badge"></span></p>
+  <p class="drill-title"><span id="acDrillTitle">カテゴリ詳細 ― 全カテゴリ</span> <span id="acImpPeriod" class="badge"></span></p>
 
   <div class="controls" style="margin-bottom:14px;">
     <div class="ctl">
@@ -2437,7 +2439,7 @@ function renderImprovementSection(prefix, rowFilter) {
   const cc = el('CauseCross');
   if (cc) {
     cc.innerHTML = causeRows.length
-      ? impTable([{ name: '原因分類 \\ 原因元' }].concat(partTotals.map(pt => ({ name: pt.p, num: 1 })))
+      ? impTable([{ name: '原因分類 × 原因元' }].concat(partTotals.map(pt => ({ name: pt.p, num: 1 })))
           .concat([{ name: '合計件数', num: 1 }, { name: '返金額', num: 1 }]), crossBody) +
         '<p class="note">返金額は「CS_返金の管理用メモに原因が記載された行」の合計です(運用変更前の期間は分類用ファイルの原因を使うため0円表示になります)。</p>'
       : '<p class="note">この期間は原因データがありません。</p>';
@@ -2464,7 +2466,7 @@ function renderImprovementSection(prefix, rowFilter) {
   const hm = el('MinorHeat');
   if (hm) {
     hm.innerHTML = heatMinors.length
-      ? impTable([{ name: '拠点 \\ 小項目' }].concat(heatMinors.map(k => ({ name: k.split(' > ')[1] || k, num: 1 })))
+      ? impTable([{ name: '拠点 × 小項目' }].concat(heatMinors.map(k => ({ name: k.split(' > ')[1] || k, num: 1 })))
           .concat([{ name: '合計', num: 1 }]), heatBody)
       : '<p class="note">この期間はSRの小項目データがありません。</p>';
   }
@@ -2671,8 +2673,8 @@ function heatCell(text, value, colKey) {
   const ratio = Math.min(1, value / max);
   // 薄すぎると見えないので下限を持たせる。上位ほど濃い赤になる。
   const alpha = (0.06 + 0.44 * ratio).toFixed(3);
-  return gridjs.html('<div style="background:rgba(224,101,58,' + alpha +
-    ');margin:-8px -10px;padding:8px 10px;text-align:right;">' + text + '</div>');
+  return gridjs.html('<div class="heat-fill" style="background:rgba(224,101,58,' + alpha +
+    ');">' + text + '</div>');
 }
 
 const DETAIL_COLUMNS = (nameLabel) => [
@@ -4612,7 +4614,7 @@ function renderCatDetailPage() {
   const label = isAll ? '全カテゴリ'
     : (cats.length === 1 ? cats[0] : cats.join(' + ') + '(合算・' + cats.length + 'カテゴリ)');
   const t = document.getElementById('acDrillTitle');
-  if (t) t.textContent = 'SR改善分析 ― ' + label;
+  if (t) t.textContent = 'カテゴリ詳細 ― ' + label;
   renderImprovementSection('ac', catSet ? (r => catSet.has(r.category)) : null);
 }
 
