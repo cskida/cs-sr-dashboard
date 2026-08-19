@@ -80,6 +80,8 @@ def collect_21st(backend) -> dict:
         "rows": rows,
         "sr_major_rows": m.build_sr_major_rows(weeks, stats),
         "cause_rows": m.build_cause_rows(weeks, stats),
+        # 原因分類ごとの「原因詳細をざっくり分類した内容」の内訳
+        "cause_detail_rows": m.build_cause_detail_rows(weeks, m.ExclusionStats()),
         "condition_rows": m.build_condition_rows(detail, extra_cond),
         "price_band_rows": m.build_price_band_rows(detail, extra_band),
         "profit_variance_rows": m.build_profit_variance_rows(detail),

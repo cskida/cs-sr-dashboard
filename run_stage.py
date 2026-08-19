@@ -144,6 +144,9 @@ def run_stage(stage: str):
         r = m.build_cause_rows(weeks, stats)
         print(f"cause_rows: {time.time()-t0:.1f}s n={len(r)} through_rows={stats.through_rows}", flush=True)
         save("cause_rows", r)
+        rd = m.build_cause_detail_rows(weeks, m.ExclusionStats())
+        print(f"  原因詳細のざっくり分類: {len(rd):,}行", flush=True)
+        save("cause_detail_rows", rd)
         save("stats_through_cause", stats.through_rows)
 
     elif stage == "ship_date_master":
@@ -276,6 +279,7 @@ def run_stage(stage: str):
 
         sr_major_rows = load("sr_major_rows")
         cause_rows = load("cause_rows")
+        cause_detail_rows = load("cause_detail_rows") if has("cause_detail_rows") else []
         condition_rows = load("condition_rows")
         price_band_rows = load("price_band_rows")
         profit_variance_rows = load("profit_variance_rows")
@@ -335,6 +339,7 @@ def run_stage(stage: str):
             "rows": rows,
             "sr_major_rows": sr_major_rows,
             "cause_rows": cause_rows,
+            "cause_detail_rows": cause_detail_rows,
             "condition_rows": condition_rows,
             "price_band_rows": price_band_rows,
             "profit_variance_rows": profit_variance_rows,

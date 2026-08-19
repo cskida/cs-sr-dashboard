@@ -1020,22 +1020,132 @@ def extract_minor_category(bunrui_cell) -> Optional[str]:
 MEMO_TAG_RE = {
     "cause_part": re.compile(r"【原因元】\s*\n\s*([^\n【]+)"),
     "cause_major": re.compile(r"【原因分類】\s*\n\s*([^\n【]+)"),
+    "cause_detail": re.compile(r"【原因詳細】\s*\n\s*([^\n【]+)"),
 }
 
 
 def parse_memo_cause(memo) -> tuple[Optional[str], Optional[str]]:
     """管理用メモから (原因分類, 原因元) を取り出す。無ければ (None, None)。"""
+    cm, cp, _ = parse_memo_cause3(memo)
+    return (cm, cp)
+
+
+def parse_memo_cause3(memo) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """管理用メモから (原因分類, 原因元, 原因詳細) を取り出す。無ければ全てNone。"""
     if memo is None or (isinstance(memo, float) and pd.isna(memo)):
-        return (None, None)
+        return (None, None, None)
     text = str(memo)
     if "【原因" not in text:
-        return (None, None)
+        return (None, None, None)
     out = {}
     for key, rx in MEMO_TAG_RE.items():
         m = rx.search(text)
         v = m.group(1).strip() if m else None
         out[key] = v or None
-    return (out.get("cause_major"), out.get("cause_part"))
+    return (out.get("cause_major"), out.get("cause_part"), out.get("cause_detail"))
+
+
+# ---------------------------------------------------------------------------
+# 原因詳細(自由記述)の「ざっくり分類」
+# ---------------------------------------------------------------------------
+# 原因詳細は「ハードディスクの不具合」「画面の左側の変色」のような自由記述で、
+# そのままでは1件ずつバラバラになり集計できない。また自由記述は公開ページに
+# 載せられないため、キーワードで決まった分類に振り分けて件数だけを集計する。
+# 上から順に判定し、最初に当たった分類を採用する(順序に意味がある)。
+CAUSE_DETAIL_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("電源が入らない・落ちる", ("電源", "起動", "立ち上が", "落ちる", "シャットダウン", "通電")),
+    ("画面・液晶の不具合", ("画面", "液晶", "ディスプレイ", "表示", "ちらつき", "焼け", "線が", "ドット", "ファインダー")),
+    ("レンズのカビ・クモリ", ("カビ", "クモリ", "くもり", "曇", "バルサム")),
+    ("異音がする", ("異音", "音がする", "ノイズ", "ガタツキ", "がたつき", "ガタ")),
+    ("音が出ない・音質不良", ("音が出", "音が鳴", "無音", "スピーカー", "ツイーター", "再生できない", "再生不可", "音質")),
+    ("液漏れ", ("液漏れ", "漏液")),
+    ("バッテリー・充電の不具合", ("バッテリー", "充電", "電池")),
+    ("接続・端子の不具合", ("端子", "ポート", "コネクタ", "接続", "認識しない", "通信", "Wi-Fi", "Bluetooth")),
+    ("割れ・折れ・変形・穴", ("割れ", "折れ", "欠け", "凹", "へこみ", "曲が", "歪", "捻", "反り", "変形",
+                             "破損", "剥が", "剥離", "穴", "亀裂", "ヒビ", "取れて")),
+    ("欠品・同梱漏れ", ("欠品", "欠落", "付属", "同梱", "不足", "入っていな", "届いていな", "紛失",
+                       "しか無", "しかなかった", "搭載されていな")),
+    ("傷・汚れ・変色", ("傷", "汚れ", "汚損", "ゴミ", "油", "サビ", "錆", "シミ", "染み", "臭",
+                       "黄変", "黄ば", "変色", "色あせ")),
+    ("記載・スペックの相違", ("記載", "型番", "表記", "誤り", "誤記", "違い", "相違", "誤回答",
+                             "タイトル", "スペック", "だった", "画像", "説明")),
+    ("海外版・仕様相違", ("海外版", "日本語", "並行輸入")),
+    ("改造・加工されていた", ("加工", "改造", "刺繍", "カスタム", "補修跡")),
+    ("アカウント・ロック未解除", ("未解除", "アクティベーション", "ロック", "SIM")),
+    ("梱包不備", ("梱包", "養生", "緩衝")),
+    ("配送・発送のミス", ("配送", "発送", "誤送", "伝票")),
+    # 否定形の言い回しは最後にまとめて拾う(物理破損や記載相違を先に判定させるため、
+    # 「しない」のような広いキーワードはこの位置に置く)
+    ("動作しない・機能不良", ("動作", "作動", "使用不可", "使えな", "機能", "不具合", "不良",
+                             "できない", "故障", "詰ま", "点灯", "絞り", "操作",
+                             "反応しな", "動かな", "回らな", "入らな", "流れない",
+                             "出力なし", "しない", "不可")),
+    ("お客様環境・主観によるもの", ("使用環境", "感じ方", "お客様の")),
+]
+
+CAUSE_DETAIL_OTHER = "その他・未分類"
+CAUSE_DETAIL_NONE = "(内容を読み取れず)"
+
+# 管理用メモに貼られる「お客様からの初回連絡内容」の見出し。表記ゆれがあるため複数に対応する。
+#   例: -------【以下初回内容】-------  /  ーー【初回お問い合わせ内容】ーー  /  【お客様：初回】
+FIRST_CONTACT_RE = re.compile(r"【[^】]*初回[^】]*】")
+
+
+def extract_first_contact(memo) -> Optional[str]:
+    """管理用メモから「お客様の初回連絡内容」の本文を取り出す。
+
+    原因詳細が書かれていない案件でも、初回連絡の文面からどんなSRだったかは読み取れる。
+    ただしこの本文には口座名義などの個人情報が含まれるため、呼び出し側では
+    classify_cause_detail に渡して「分類名」に変換した結果だけを使い、本文は保持しない。
+    """
+    if memo is None or (isinstance(memo, float) and pd.isna(memo)):
+        return None
+    text = str(memo)
+    m = FIRST_CONTACT_RE.search(text)
+    if not m:
+        return None
+    body = text[m.end():].strip(" -─―ー=\r\n\t")
+    return body or None
+
+
+def _match_detail_rules(text: str) -> Optional[str]:
+    for label, keywords in CAUSE_DETAIL_RULES:
+        for kw in keywords:
+            if kw in text:
+                return label
+    return None
+
+
+def classify_cause_detail(detail) -> str:
+    """原因詳細(自由記述)を、あらかじめ決めた分類名に振り分ける。"""
+    if detail is None or (isinstance(detail, float) and pd.isna(detail)):
+        return CAUSE_DETAIL_NONE
+    text = str(detail).strip()
+    if not text or text.lower() == "nan":
+        return CAUSE_DETAIL_NONE
+    return _match_detail_rules(text) or CAUSE_DETAIL_OTHER
+
+
+def classify_cause_detail_with_source(detail, memo) -> tuple[str, str]:
+    """(分類名, どこから読み取ったか) を返す。
+
+    1. 【原因詳細】の記載があればそれを使う
+    2. 無ければ管理用メモの「初回連絡内容」の本文から読み取る
+    3. どちらも無い/判定できない場合は「(内容を読み取れず)」
+
+    どちらの文章も自由記述なので、返すのは分類名と出所だけ。本文は保持しない。
+    """
+    if detail is not None and not (isinstance(detail, float) and pd.isna(detail)):
+        text = str(detail).strip()
+        if text and text.lower() != "nan":
+            return (_match_detail_rules(text) or CAUSE_DETAIL_OTHER, "原因詳細")
+    body = extract_first_contact(memo)
+    if body:
+        hit = _match_detail_rules(body)
+        if hit:
+            return (hit, "初回連絡")
+        return (CAUSE_DETAIL_OTHER, "初回連絡")
+    return (CAUSE_DETAIL_NONE, "記載なし")
 
 
 def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFrame:
@@ -2064,7 +2174,7 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
     旧ファイル、という混在期でも取りこぼさずに集計できる。
     """
     cols = ["cs_id", "week_start", "week_end", "year_month", "location", "category",
-            "cause_major", "cause_part", "refund_amount", "source"]
+            "cause_major", "cause_part", "detail_group", "detail_source", "refund_amount", "source"]
 
     def _prep(df: pd.DataFrame, date_col: str, w: WeekFiles) -> pd.DataFrame:
         d = tag_by_date(df, w, date_col)
@@ -2074,11 +2184,19 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
             stats.through_rows += int(through.sum())
             d = d[~through].copy()
         d = d[to_datetime_any(d[date_col]).notna()].copy()
+        # 原因分析はSRを対象にする(種別=CSの商品質問などは別体系のため除く)
+        if "種別" in d.columns:
+            d = d[d["種別"].fillna("").astype(str).str.strip() == "SR"].copy()
         return d
 
     def _finish(d: pd.DataFrame, source: str, with_amount: bool) -> pd.DataFrame:
         if d.empty:
             return pd.DataFrame(columns=cols)
+        _memo = d["管理用メモ"] if "管理用メモ" in d.columns else pd.Series([None] * len(d), index=d.index)
+        _dg = pd.Series(
+            [classify_cause_detail_with_source(cd, mm) for cd, mm in zip(d["cause_detail"], _memo)],
+            index=d.index,
+        )
         out = pd.DataFrame({
             "cs_id": d["CS ID"].astype(str).str.strip(),
             "week_start": d["_week_start"],
@@ -2088,6 +2206,8 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
             "category": d["カテゴリ"].fillna("不明").replace("", "不明"),
             "cause_major": d["cause_major"],
             "cause_part": d["cause_part"].fillna("(不明)").replace("", "(不明)"),
+            "detail_group": _dg.map(lambda t: t[0]),
+            "detail_source": _dg.map(lambda t: t[1]),
             "refund_amount": (to_excl_tax(to_numeric(d["返金額"])).fillna(0.0)
                               if (with_amount and "返金額" in d.columns) else 0.0),
             "source": source,
@@ -2107,9 +2227,10 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
     memo_refund = pd.DataFrame(columns=cols)
     if frames:
         d = concat_and_dedup(frames, id_col="CS ID")
-        parsed = d["管理用メモ"].map(parse_memo_cause)
+        parsed = d["管理用メモ"].map(parse_memo_cause3)
         d["cause_major"] = parsed.map(lambda t: t[0])
         d["cause_part"] = parsed.map(lambda t: t[1])
+        d["cause_detail"] = parsed.map(lambda t: t[2])
         memo_refund = _finish(d, "返金メモ", True)
 
     # --- 2) CS_登録の管理用メモ / 3) CS_登録【分類用】の原因列 ---
@@ -2124,15 +2245,17 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
     if frames:
         d = concat_and_dedup(frames, id_col="CS ID")
         if "管理用メモ" in d.columns:
-            parsed = d["管理用メモ"].map(parse_memo_cause)
+            parsed = d["管理用メモ"].map(parse_memo_cause3)
             dm = d.copy()
             dm["cause_major"] = parsed.map(lambda t: t[0])
             dm["cause_part"] = parsed.map(lambda t: t[1])
+            dm["cause_detail"] = parsed.map(lambda t: t[2])
             memo_touroku = _finish(dm, "登録メモ", False)
         if all(c in d.columns for c in ("原因分類", "原因元")):
             df2 = d.copy()
             df2["cause_major"] = df2["原因分類"].astype(str).str.strip().replace({"nan": None, "": None})
             df2["cause_part"] = df2["原因元"].astype(str).str.strip().replace({"nan": None, "": None})
+            df2["cause_detail"] = (df2["原因詳細"] if "原因詳細" in df2.columns else None)
             file_cause = _finish(df2, "分類用ファイル", False)
 
     merged = pd.concat([memo_refund, memo_touroku, file_cause], ignore_index=True)
@@ -2142,6 +2265,41 @@ def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFram
     merged = merged[merged["cs_id"].astype(str).str.strip() != ""]
     merged = merged.drop_duplicates(subset=["cs_id"], keep="first")
     return merged
+
+
+def build_cause_detail_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
+    """原因分類ごとに「原因詳細をざっくり分類した内容」の内訳を作る。
+
+    「動作不備と書かれているが、具体的には何が起きているのか」を追えるようにするための
+    データ。原因詳細の自由記述そのものは持たず、classify_cause_detail で決まった
+    分類名に置き換えた件数・返金額だけを保持する(公開ページに載せるため)。
+    """
+    rec = _cause_records(weeks, stats)
+    if rec.empty:
+        return []
+    grouped = (
+        rec.groupby(["week_start", "week_end", "year_month", "location", "category",
+                     "cause_major", "detail_group", "detail_source"])
+        .agg(count=("cs_id", "size"), refund_amount=("refund_amount", "sum"))
+        .reset_index()
+    )
+    out = [
+        {
+            "week_start": r["week_start"],
+            "week_end": r["week_end"],
+            "year_month": r["year_month"],
+            "location": r["location"],
+            "category": r["category"],
+            "cause_major": r["cause_major"],
+            "detail_group": r["detail_group"],
+            "detail_source": r["detail_source"],
+            "count": int(r["count"]),
+            "refund_amount": _safe_float(r["refund_amount"]) or 0.0,
+        }
+        for _, r in grouped.iterrows()
+    ]
+    out.sort(key=lambda r: (r["week_start"], r["cause_major"], -r["count"]))
+    return out
 
 
 def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:

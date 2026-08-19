@@ -661,11 +661,18 @@ html = r'''<!DOCTYPE html>
   <div class="card major-chart-card"><canvas id="acMinorChart"></canvas></div>
   <div class="card table-section cause-pivot"><div id="acMinorTable"></div></div>
 
-  <h2>小項目別の推移</h2>
-  <div class="card major-chart-card"><canvas id="acMinorTrend"></canvas></div>
-
-  <h2>原因分類 × 原因元</h2>
+  <h2>原因分類 × 原因元 <span class="badge">原因分類をクリックすると内容の内訳が開きます</span></h2>
   <div class="card table-section"><div id="acCauseCross"></div></div>
+
+  <details class="card insight-box" id="acCauseDetailBox" style="display:none;" open>
+    <summary style="cursor:pointer;font-weight:700;color:#1c2b4a;font-size:15px;list-style:revert;">
+      <span id="acCauseDetailTitle">原因分類の内容</span>
+      <span class="badge">クリックで開閉</span>
+    </summary>
+    <div class="insight-meta" style="margin-top:8px;" id="acCauseDetailMeta"></div>
+    <div id="acCauseDetailTable" style="margin-top:8px;"></div>
+    <p class="note">「原因詳細」の文章をキーワードで内容分類に振り分けて件数を集計しています。原因詳細の記載がない案件は、管理用メモの「初回連絡内容」(お客様からの一次連絡文)から読み取ります。どちらも自由記述なので、分類名と件数だけを保持し本文は表示していません(読み取り元は上に表示)。「その他・未分類」が多い場合は書き方にばらつきがあるサインです。</p>
+  </details>
 
   <h2>拠点 × 小項目 ヒートマップ</h2>
   <div class="card table-section"><div id="acMinorHeat"></div></div>
@@ -681,6 +688,10 @@ html = r'''<!DOCTYPE html>
     <div class="ctl">
       <label>カテゴリ(複数選択可。未選択なら全カテゴリ)</label>
       <select id="condCatMultiSelect" multiple size="6" style="min-width:240px;"></select>
+    </div>
+    <div class="ctl">
+      <label>コンディション(複数選択可。未選択なら全コンディション。下の「推移」の6グラフに効きます)</label>
+      <select id="condDimMultiSelect" multiple size="6" style="min-width:200px;"></select>
     </div>
     <div class="ctl">
       <label>&nbsp;</label>
@@ -711,7 +722,8 @@ html = r'''<!DOCTYPE html>
     <div class="card mini-chart-card"><canvas id="condQuestionChart"></canvas></div>
   </div>
 
-  <h2>コンディションランク別 推移</h2>
+  <h2>コンディションランク別 推移 <span id="condTrendScope" class="badge"></span></h2>
+  <div class="card major-chart-card"><canvas id="condTotalListedTrend"></canvas></div>
   <div class="card major-chart-card"><canvas id="condTrendChart"></canvas></div>
   <div class="mini-charts-grid">
     <div class="card mini-chart-card"><canvas id="condSrRateTrend"></canvas></div>
@@ -1288,6 +1300,8 @@ function rehydrateRows(packed) {
 const ROWS = rehydrateRows(DATA.rows);
 const SR_MAJOR_ROWS = rehydrateRows(DATA.sr_major_rows);
 const CAUSE_ROWS = rehydrateRows(DATA.cause_rows);
+// 原因分類ごとの「原因詳細をざっくり分類した内容」の内訳(自由記述は含まない)
+const CAUSE_DETAIL_ROWS = rehydrateRows(DATA.cause_detail_rows);
 const CONDITION_ROWS = rehydrateRows(DATA.condition_rows);
 const PRICE_BAND_ROWS = rehydrateRows(DATA.price_band_rows);
 const PROFIT_VARIANCE_ROWS = rehydrateRows(DATA.profit_variance_rows);
@@ -1527,6 +1541,19 @@ if (deficitCatMultiSel) {
   deficitCatMultiSel.appendChild(allOpt);
   allOpt.selected = true;
   deficitCategories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; deficitCatMultiSel.appendChild(o); });
+}
+
+// ⑤コンディションページ: 「推移」の6グラフだけに効くコンディション絞り込みセレクタ。
+const condDimMultiSel = document.getElementById('condDimMultiSelect');
+if (condDimMultiSel) {
+  const ranks = Array.from(new Set(CONDITION_ROWS.map(r => r.condition))).filter(Boolean)
+    .sort((a, b) => conditionSortKey(a) - conditionSortKey(b));
+  const allOpt = document.createElement('option');
+  allOpt.value = ALL_CAT; allOpt.textContent = '(全コンディション)';
+  condDimMultiSel.appendChild(allOpt);
+  allOpt.selected = true;
+  ranks.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; condDimMultiSel.appendChild(o); });
+  condDimMultiSel.addEventListener('change', () => { if (currentPage === 'condition') renderPageContent(); });
 }
 
 // ③カテゴリ詳細(SR改善分析)ページ用の複数選択カテゴリセレクタ。
@@ -2436,7 +2463,8 @@ function renderImprovementSection(prefix, rowFilter) {
     .sort((a, b) => b.n - a.n);
   const maxCross = Math.max(1, ...majorTotals.flatMap(x => partTotals.map(pt => (cross.get(x.mj + '|' + pt.p) || {}).n || 0)));
   const crossBody = majorTotals.map(x =>
-    '<tr>' + impCell(x.mj) +
+    '<tr>' + impCell('<a href="#" class="cause-drill" data-major="' + x.mj + '" data-prefix="' + prefix +
+      '" style="color:#2455c9;text-decoration:underline;cursor:pointer;">' + x.mj + '</a>') +
     partTotals.map(pt => {
       const n = (cross.get(x.mj + '|' + pt.p) || {}).n || 0;
       const bg = n ? 'rgba(224,101,58,' + (0.10 + 0.55 * (n / maxCross)).toFixed(2) + ')' : '';
@@ -2964,13 +2992,64 @@ function renderConditionPricePage(cfg) {
   renderChart(cfg.prefix + 'QuestionChart', dualAxisConfig(names, data.map(d => d.question_count),
     data.map(d => cpRates(d).question_rate), '質問数', '質問率', '件数', false));
 
+  // ---- ここから下の「推移」6グラフは、専用のコンディション絞り込みも反映する ----
+  // cfg.dimSelId が設定されているページ(⑤コンディション)だけで有効。
+  const dimSel = cfg.dimSelId ? document.getElementById(cfg.dimSelId) : null;
+  let pickedDims = dimSel ? getMultiSelectValues(dimSel) : [];
+  const isAllDims = !dimSel || pickedDims.length === 0 || pickedDims.includes(ALL_CAT);
+  if (isAllDims) pickedDims = [];
+  const dimSet = new Set(pickedDims);
+  const trendFilter = isAllDims ? rowFilter : (r => rowFilter(r) && dimSet.has(r[cfg.dim]));
+  const scopeLabel = isAllDims ? ('全' + cfg.dimLabel)
+    : (pickedDims.length === 1 ? pickedDims[0] : pickedDims.join(' + ') + '(合算)');
+  const scopeEl = document.getElementById(cfg.prefix + 'TrendScope');
+  if (scopeEl) scopeEl.textContent = scopeLabel;
+
   // 推移(積み上げ出荷件数)
-  const present = Array.from(new Set(cfg.rows.map(r => r[cfg.dim])));
+  const present = Array.from(new Set(cfg.rows.map(r => r[cfg.dim])))
+    .filter(v => isAllDims || dimSet.has(v));
   const order = present.sort((a, b) => cfg.sortKey(a) - cfg.sortKey(b));
-  const trendMap = new Map();
   const periods = availablePeriods(granularity);
+
+  // 冒頭: 選択中コンディション全体の出品数推移(単系列)
+  if (document.getElementById(cfg.prefix + 'TotalListedTrend')) {
+    const totalMap = new Map();
+    cfg.rows.forEach(r => {
+      if (!trendFilter(r)) return;
+      const pk = periodKeyFor(r, granularity);
+      if (pk.key == null) return;
+      totalMap.set(pk.label, (totalMap.get(pk.label) || 0) + (r.listed_count || 0));
+    });
+    let done = false;
+    if (isYoyMode()) {
+      const ser = buildYoyGeneric(cfg.rows, ['listed_count'], trendFilter);
+      if (ser.fyNums.length > 1) {
+        renderChart(cfg.prefix + 'TotalListedTrend', yoyGenericConfig(ser, 'listed_count', null,
+          '出品数', '', '件数', false, scopeLabel + ' の出品数'));
+        done = true;
+      }
+    }
+    if (!done) {
+      renderChart(cfg.prefix + 'TotalListedTrend', {
+        type: 'bar',
+        data: {
+          labels: periods.map(p => p.label),
+          datasets: [{ label: '出品数', data: periods.map(p => totalMap.get(p.label) || 0),
+            backgroundColor: '#5b8def' }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false },
+            title: { display: true, text: scopeLabel + ' の出品数の推移(件)' } },
+          scales: { y: { beginAtZero: true }, x: { ticks: { font: { size: 9.5 }, maxRotation: 55 } } }
+        }
+      });
+    }
+  }
+
+  const trendMap = new Map();
   cfg.rows.forEach(r => {
-    if (!rowFilter(r)) return;
+    if (!trendFilter(r)) return;
     const pk = periodKeyFor(r, granularity);
     if (pk.key == null) return;
     if (!trendMap.has(pk.label)) trendMap.set(pk.label, {});
@@ -2979,7 +3058,7 @@ function renderConditionPricePage(cfg) {
   });
   if (isYoyMode()) {
     // 月次: 決算月×期で、選択中の絞り込みに対する出荷件数を昨対比較する
-    const ser = buildYoyGeneric(cfg.rows, ['shipped_count', 'count', 'sr_count', 'sales_amount'], rowFilter);
+    const ser = buildYoyGeneric(cfg.rows, ['shipped_count', 'count', 'sr_count', 'sales_amount'], trendFilter);
     if (ser.fyNums.length > 1) {
       renderChart(cfg.prefix + 'TrendChart', yoyGenericConfig(ser, 'shipped_count',
         d => (d.shipped_count || d.count) ? d.sr_count / (d.shipped_count || d.count) : null,
@@ -3003,20 +3082,20 @@ function renderConditionPricePage(cfg) {
   ];
   const cpYoy = isYoyMode()
     ? buildYoyGeneric(cfg.rows, ['shipped_count', 'count', 'sr_count', 'refund_amount', 'sales_amount',
-        'listed_count', 'question_count'], rowFilter)
+        'listed_count', 'question_count'], trendFilter)
     : null;
   if (cpYoy && cpYoy.fyNums.length > 1) {
     rateSpecs.forEach(([id, bar, rateFn, barLabel, lineLabel, leftLabel, money, title]) => {
       renderChart(cfg.prefix + id, yoyGenericConfig(cpYoy, bar, rateFn, barLabel, lineLabel, leftLabel, money, title));
     });
   } else {
-    renderChart(cfg.prefix + 'SrRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+    renderChart(cfg.prefix + 'SrRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, trendFilter, order,
       (o, r) => { o.num += r.sr_count || 0; o.den += (r.shipped_count || r.count || 0); }, true, 'SR率の推移(%)'));
-    renderChart(cfg.prefix + 'RefundRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+    renderChart(cfg.prefix + 'RefundRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, trendFilter, order,
       (o, r) => { o.num += r.refund_amount || 0; o.den += r.sales_amount || 0; }, true, '返金率の推移(金額ベース・%)'));
-    renderChart(cfg.prefix + 'ListedTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+    renderChart(cfg.prefix + 'ListedTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, trendFilter, order,
       (o, r) => { o.num += r.listed_count || 0; o.den += 1; }, false, '出品数の推移(件)'));
-    renderChart(cfg.prefix + 'QuestionRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, rowFilter, order,
+    renderChart(cfg.prefix + 'QuestionRateTrend', cpTrendConfig(cfg.rows, cfg.dim, granularity, trendFilter, order,
       (o, r) => { o.num += r.question_count || 0; o.den += r.listed_count || 0; }, true, '質問率の推移(質問÷出品・%)'));
   }
 
@@ -3039,7 +3118,8 @@ function renderConditionPricePage(cfg) {
 function renderConditionPage() {
   renderConditionPricePage({
     rows: CONDITION_ROWS, dim: 'condition', dimLabel: 'コンディションランク',
-    prefix: 'cond', selId: 'condCatMultiSelect', sortKey: conditionSortKey
+    prefix: 'cond', selId: 'condCatMultiSelect', sortKey: conditionSortKey,
+    dimSelId: 'condDimMultiSelect' 
   });
 }
 
@@ -4622,6 +4702,77 @@ function renderAllCategoryPage() {
 
 // ---------- ③ カテゴリ詳細(SR改善分析)ページ ----------
 // ②から切り出したSR改善分析。カテゴリを選んで絞り込める(未選択・(全カテゴリ)は全件)。
+// 原因分類をクリックしたときに開く「内容(原因詳細のざっくり分類)」の内訳。
+// 自由記述そのものは持たず、ETL側でキーワード分類した名称の件数・返金額を出す。
+let causeDrillMajor = null;
+
+function renderCauseDetailDrill(prefix, major) {
+  const box = document.getElementById(prefix + 'CauseDetailBox');
+  if (!box) return;
+  causeDrillMajor = major;
+  box.style.display = '';
+  const granularity = granSel.value, periodKey = periodSel.value;
+  const cats = acCatMultiSel ? getMultiSelectValues(acCatMultiSel) : [];
+  const isAll = cats.length === 0 || cats.includes(ALL_CAT);
+  const catSet = isAll ? null : new Set(cats);
+  const rows = (typeof CAUSE_DETAIL_ROWS === 'undefined' ? [] : CAUSE_DETAIL_ROWS).filter(r =>
+    r.cause_major === major &&
+    (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
+    (!catSet || catSet.has(r.category)));
+
+  document.getElementById(prefix + 'CauseDetailTitle').textContent = '「' + major + '」の内容の内訳';
+  const meta = document.getElementById(prefix + 'CauseDetailMeta');
+  const bySrc = new Map();
+  rows.forEach(r => bySrc.set(r.detail_source, (bySrc.get(r.detail_source) || 0) + (r.count || 0)));
+  const srcText = Array.from(bySrc.entries()).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => k + ' ' + fmtInt(v) + '件').join(' / ');
+  if (meta) meta.textContent = '対象期間: ' + currentPeriodLabel() + ' / カテゴリ: ' +
+    (isAll ? '全カテゴリ' : cats.join(' + ')) + (srcText ? '　読み取り元: ' + srcText : '');
+
+  const el = document.getElementById(prefix + 'CauseDetailTable');
+  if (!rows.length) {
+    el.innerHTML = '<p class="note">この条件では原因詳細の記録がありません(返金メモに原因詳細が書かれていない期間かもしれません)。</p>';
+    return;
+  }
+  const agg = new Map();
+  rows.forEach(r => {
+    const o = agg.get(r.detail_group) || { n: 0, amt: 0 };
+    o.n += r.count || 0; o.amt += r.refund_amount || 0;
+    agg.set(r.detail_group, o);
+  });
+  const list = Array.from(agg.entries()).sort((a, b) => b[1].n - a[1].n);
+  const total = list.reduce((a, x) => a + x[1].n, 0);
+  const totalAmt = list.reduce((a, x) => a + x[1].amt, 0);
+  const maxN = Math.max(1, ...list.map(x => x[1].n));
+  const body = list.map(([k, o]) => {
+    const bg = 'rgba(224,101,58,' + (0.06 + 0.44 * (o.n / maxN)).toFixed(3) + ')';
+    return '<tr>' + impCell(k) + impCell(fmtInt(o.n), { num: 1, bg }) +
+      impCell(total ? fmtPct(o.n / total) : '-', { num: 1 }) +
+      impCell(fmtYen(o.amt), { num: 1 }) +
+      impCell(o.n ? fmtYen(o.amt / o.n) : '-', { num: 1 }) + '</tr>';
+  }).join('') +
+    '<tr>' + impCell('合計', { bg: '#eef1f5', bold: 1 }) +
+    impCell(fmtInt(total), { num: 1, bg: '#eef1f5', bold: 1 }) +
+    impCell('100.00%', { num: 1, bg: '#eef1f5', bold: 1 }) +
+    impCell(fmtYen(totalAmt), { num: 1, bg: '#eef1f5', bold: 1 }) +
+    impCell(total ? fmtYen(totalAmt / total) : '-', { num: 1, bg: '#eef1f5', bold: 1 }) + '</tr>';
+  el.innerHTML = impTable([{ name: '内容(原因詳細の分類)' }, { name: '件数', num: 1 },
+    { name: '構成比', num: 1 }, { name: '返金額(円)', num: 1 }, { name: '1件あたり(円)', num: 1 }], body);
+}
+
+// 原因分類クリックの受け口(表は再描画で要素が入れ替わるためイベント委譲で拾う)
+if (typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (t && t.classList && t.classList.contains('cause-drill')) {
+      ev.preventDefault();
+      renderCauseDetailDrill(t.getAttribute('data-prefix') || 'ac', t.getAttribute('data-major'));
+      const box = document.getElementById((t.getAttribute('data-prefix') || 'ac') + 'CauseDetailBox');
+      if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+}
+
 function renderCatDetailPage() {
   const cats = acCatMultiSel ? getMultiSelectValues(acCatMultiSel) : [];
   const isAll = cats.length === 0 || cats.includes(ALL_CAT);
@@ -4631,6 +4782,7 @@ function renderCatDetailPage() {
   const t = document.getElementById('acDrillTitle');
   if (t) t.textContent = 'カテゴリ詳細 ― ' + label;
   renderImprovementSection('ac', catSet ? (r => catSet.has(r.category)) : null);
+  if (causeDrillMajor) renderCauseDetailDrill('ac', causeDrillMajor);
 }
 
 // ---------- 比較KPIカード(②/④で使用) ----------
