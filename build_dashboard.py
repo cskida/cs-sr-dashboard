@@ -2448,7 +2448,7 @@ function renderImprovementSection(prefix, rowFilter) {
     cc.innerHTML = causeRows.length
       ? impTable([{ name: '原因分類 × 原因元' }].concat(partTotals.map(pt => ({ name: pt.p, num: 1 })))
           .concat([{ name: '合計件数', num: 1 }, { name: '返金額', num: 1 }]), crossBody) +
-        '<p class="note">返金額は「CS_返金の管理用メモに原因が記載された行」の合計です(運用変更前の期間は分類用ファイルの原因を使うため0円表示になります)。</p>'
+        '<p class="note">原因は案件(CS ID)ごとに ①CS_返金の管理用メモ → ②CS_登録の管理用メモ → ③CS_登録【分類用】の原因分類・原因元 の優先順で採用しています。返金額が入るのは①のみのため、②③が出所の案件は0円表示になります。</p>'
       : '<p class="note">この期間は原因データがありません。</p>';
   }
 

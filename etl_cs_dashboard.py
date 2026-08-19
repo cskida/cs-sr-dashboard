@@ -1048,7 +1048,10 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     """
     frames = []
     for w in weeks:
-        raw = w.files.get("cs_bunruiyou")
+        # 【分類用】ファイルが無い週でも、通常のCS_登録に「分類」列(SR > 大項目 > 小項目)が
+        # 入っているのでそちらから読む。2026年8月に運用が「返金メモへの原因記載」へ切り替わり
+        # 【分類用】ファイルが作られなくなったため、通常版へのフォールバックが必須になった。
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
         if raw is None:
             continue
         df = read_csv_bytes(raw)
@@ -2046,39 +2049,130 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
     ]
 
 
-def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
-    """原因(原因分類×原因元)の行を作る。
+def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFrame:
+    """原因が分かるレコードを、1行=1案件(CS ID)の形で集める。
 
-    データ源は2つあり、週(基準日)ごとに次の優先順で採用する:
-      1. CS_返金の「管理用メモ」に記載された原因(運用変更後。返金額も分かる)
-      2. CS_登録【分類用】の「原因分類」「原因元」列(運用変更前を後から分類したもの)
-    同じ週で二重計上しないよう、1が1件でもある週は1のみを使う。
-    どちらの出所かは source 列で区別できるようにしておく。
+    出所は3つあり、同じCS IDについては次の優先順で1件だけ採用する。
+      1. CS_返金の「管理用メモ」の【原因元】【原因分類】(現行運用。返金額も分かる)
+      2. CS_登録(【分類用】が無ければ通常版)の「管理用メモ」の【原因】記載
+      3. CS_登録【分類用】の「原因分類」「原因元」列(運用変更前に手作業で分類したもの)
+
+    2026年8月に運用が「返金確定時に管理用メモへ原因を記載する」方式へ切り替わり、
+    【分類用】ファイルが作られなくなった。以前は「週単位」でどちらの出所を使うかを
+    決めていたため、切り替え期の週で片方のデータが丸ごと捨てられていた。
+    案件単位で優先順を判定することで、記載がある案件は新運用、記載がない案件は
+    旧ファイル、という混在期でも取りこぼさずに集計できる。
     """
-    memo_df = aggregate_cause_from_refund(weeks)
-    file_df = aggregate_cause(weeks, stats)
-    memo_weeks = set(memo_df["week_start"]) if not memo_df.empty else set()
-    if not file_df.empty and memo_weeks:
-        file_df = file_df[~file_df["week_start"].isin(memo_weeks)].copy()
+    cols = ["cs_id", "week_start", "week_end", "year_month", "location", "category",
+            "cause_major", "cause_part", "refund_amount", "source"]
 
-    out = []
-    for df, source in ((memo_df, "返金メモ"), (file_df, "分類用ファイル")):
-        if df.empty:
+    def _prep(df: pd.DataFrame, date_col: str, w: WeekFiles) -> pd.DataFrame:
+        d = tag_by_date(df, w, date_col)
+        d = d[~d["拠点"].map(is_excluded_location)].copy()
+        if "ステータス" in d.columns:
+            through = d["ステータス"].fillna("").astype(str).str.strip() == "スルー"
+            stats.through_rows += int(through.sum())
+            d = d[~through].copy()
+        d = d[to_datetime_any(d[date_col]).notna()].copy()
+        return d
+
+    def _finish(d: pd.DataFrame, source: str, with_amount: bool) -> pd.DataFrame:
+        if d.empty:
+            return pd.DataFrame(columns=cols)
+        out = pd.DataFrame({
+            "cs_id": d["CS ID"].astype(str).str.strip(),
+            "week_start": d["_week_start"],
+            "week_end": d["_week_end"],
+            "year_month": d["_year_month"],
+            "location": d["拠点"].fillna("(不明)"),
+            "category": d["カテゴリ"].fillna("不明").replace("", "不明"),
+            "cause_major": d["cause_major"],
+            "cause_part": d["cause_part"].fillna("(不明)").replace("", "(不明)"),
+            "refund_amount": (to_excl_tax(to_numeric(d["返金額"])).fillna(0.0)
+                              if (with_amount and "返金額" in d.columns) else 0.0),
+            "source": source,
+        })
+        return out[out["cause_major"].notna() & (out["cause_major"].astype(str).str.strip() != "")]
+
+    # --- 1) CS_返金の管理用メモ ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
             continue
-        df = df.sort_values(["week_start", "location", "category", "cause_major", "cause_part"])
-        for _, r in df.iterrows():
-            out.append({
-                "week_start": r["week_start"],
-                "week_end": r["week_end"],
-                "year_month": r["year_month"],
-                "location": r["location"],
-                "category": r["category"],
-                "cause_major": r["cause_major"],
-                "cause_part": r["cause_part"],
-                "count": int(r["count"]),
-                "refund_amount": float(r["refund_amount"]) if "refund_amount" in df.columns else 0.0,
-                "source": source,
-            })
+        df = read_csv_bytes(raw)
+        if "管理用メモ" not in df.columns:
+            continue
+        frames.append(_prep(df, "返金日", w))
+    memo_refund = pd.DataFrame(columns=cols)
+    if frames:
+        d = concat_and_dedup(frames, id_col="CS ID")
+        parsed = d["管理用メモ"].map(parse_memo_cause)
+        d["cause_major"] = parsed.map(lambda t: t[0])
+        d["cause_part"] = parsed.map(lambda t: t[1])
+        memo_refund = _finish(d, "返金メモ", True)
+
+    # --- 2) CS_登録の管理用メモ / 3) CS_登録【分類用】の原因列 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
+        if raw is None:
+            continue
+        frames.append(_prep(read_csv_bytes(raw), "登録", w))
+    memo_touroku = pd.DataFrame(columns=cols)
+    file_cause = pd.DataFrame(columns=cols)
+    if frames:
+        d = concat_and_dedup(frames, id_col="CS ID")
+        if "管理用メモ" in d.columns:
+            parsed = d["管理用メモ"].map(parse_memo_cause)
+            dm = d.copy()
+            dm["cause_major"] = parsed.map(lambda t: t[0])
+            dm["cause_part"] = parsed.map(lambda t: t[1])
+            memo_touroku = _finish(dm, "登録メモ", False)
+        if all(c in d.columns for c in ("原因分類", "原因元")):
+            df2 = d.copy()
+            df2["cause_major"] = df2["原因分類"].astype(str).str.strip().replace({"nan": None, "": None})
+            df2["cause_part"] = df2["原因元"].astype(str).str.strip().replace({"nan": None, "": None})
+            file_cause = _finish(df2, "分類用ファイル", False)
+
+    merged = pd.concat([memo_refund, memo_touroku, file_cause], ignore_index=True)
+    if merged.empty:
+        return pd.DataFrame(columns=cols)
+    # 同じ案件は優先順の高い出所(=先に連結したもの)だけ残す
+    merged = merged[merged["cs_id"].astype(str).str.strip() != ""]
+    merged = merged.drop_duplicates(subset=["cs_id"], keep="first")
+    return merged
+
+
+def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
+    """原因(原因分類×原因元)の行を、案件(CS ID)単位の優先順で作る。
+
+    優先順は _cause_records を参照。どの出所を採用したかは source 列で分かる。
+    """
+    rec = _cause_records(weeks, stats)
+    if rec.empty:
+        return []
+    grouped = (
+        rec.groupby(["week_start", "week_end", "year_month", "location", "category",
+                     "cause_major", "cause_part", "source"])
+        .agg(count=("cs_id", "size"), refund_amount=("refund_amount", "sum"))
+        .reset_index()
+    )
+    out = [
+        {
+            "week_start": r["week_start"],
+            "week_end": r["week_end"],
+            "year_month": r["year_month"],
+            "location": r["location"],
+            "category": r["category"],
+            "cause_major": r["cause_major"],
+            "cause_part": r["cause_part"],
+            "count": int(r["count"]),
+            "refund_amount": _safe_float(r["refund_amount"]) or 0.0,
+            "source": r["source"],
+        }
+        for _, r in grouped.iterrows()
+    ]
     out.sort(key=lambda r: (r["week_start"], r["location"], r["category"], r["cause_major"]))
     return out
 
