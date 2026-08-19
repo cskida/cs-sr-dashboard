@@ -233,12 +233,13 @@ html = r'''<!DOCTYPE html>
 <div class="page-nav">
   <button class="page-nav-btn active" id="navBtnOverall" type="button">① 全拠点</button>
   <button class="page-nav-btn" id="navBtnAllCategory" type="button">② 全カテゴリ</button>
-  <button class="page-nav-btn" id="navBtnDetail" type="button">③ 拠点×カテゴリ</button>
-  <button class="page-nav-btn" id="navBtnCondition" type="button">④ コンディション</button>
-  <button class="page-nav-btn" id="navBtnPriceBand" type="button">⑤ 価格帯</button>
-  <button class="page-nav-btn" id="navBtnProfitVariance" type="button">⑥ 粗利差異</button>
-  <button class="page-nav-btn" id="navBtnDeficit" type="button">⑦ 赤字(原価割れ)</button>
-  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑧ SRリピーター・ロイヤルカスタマー</button>
+  <button class="page-nav-btn" id="navBtnCatDetail" type="button">③ カテゴリ詳細(SR改善分析)</button>
+  <button class="page-nav-btn" id="navBtnDetail" type="button">④ 拠点×カテゴリ</button>
+  <button class="page-nav-btn" id="navBtnCondition" type="button">⑤ コンディション</button>
+  <button class="page-nav-btn" id="navBtnPriceBand" type="button">⑥ 価格帯</button>
+  <button class="page-nav-btn" id="navBtnProfitVariance" type="button">⑦ 粗利差異</button>
+  <button class="page-nav-btn" id="navBtnDeficit" type="button">⑧ 赤字(原価割れ)</button>
+  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑨ SRリピーター・ロイヤルカスタマー</button>
 </div>
 
 <div class="controls" id="globalControls">
@@ -269,7 +270,7 @@ html = r'''<!DOCTYPE html>
     <select id="period"></select>
   </div>
   <div class="ctl ctl-loc" id="ctlLoc">
-    <label>拠点フィルタ(②拠点別・⑤拠点×カテゴリ・⑧赤字ページで使用。⑤⑧は「全拠点」も選べます)</label>
+    <label>拠点フィルタ(④拠点×カテゴリ・⑧赤字ページで使用。どちらも「全拠点」を選べます)</label>
     <select id="locFilter"></select>
   </div>
 </div>
@@ -363,7 +364,7 @@ html = r'''<!DOCTYPE html>
 
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="ovMinorChart"></canvas></div>
-  <div class="card table-section"><div id="ovMinorTable" class="detail-table"></div></div>
+  <div class="card table-section cause-pivot"><div id="ovMinorTable"></div></div>
 
   <h2>小項目別の推移</h2>
   <div class="card major-chart-card"><canvas id="ovMinorTrend"></canvas></div>
@@ -376,7 +377,7 @@ html = r'''<!DOCTYPE html>
 
 </div>
 
-<!-- ============ ② 拠点別ページ(1拠点ドリルダウン) ============ -->
+<!-- ============ (旧②拠点別ページ。現在は④拠点×カテゴリに統合) ============ -->
 <div class="page-section" id="page-detail">
 
   <div class="controls" style="margin-bottom:14px;">
@@ -446,7 +447,7 @@ html = r'''<!DOCTYPE html>
     <div id="detailTableLocCat" class="detail-table"></div>
   </div>
 
-  <p class="note">拠点セレクタ・カテゴリ複数選択で組合せを指定すると、その組合せの問合せ/SR/返金/質問/出荷/出品/ジャンク・コンディション・価格帯・粗利差異を集約して表示します(既存の②拠点別・④カテゴリ別ページと同じ集計データを両方の軸で絞り込んだものです。ETL側で新しい集計を追加しているわけではありません)。カテゴリを複数選択した場合は選択カテゴリの合算値になります。</p>
+  <p class="note">拠点セレクタ・カテゴリ複数選択で組合せを指定すると、その組合せの問合せ/SR/返金/質問/出荷/出品/ジャンク・コンディション・価格帯・粗利差異を集約して表示します(①全拠点・②全カテゴリページと同じ集計データを両方の軸で絞り込んだものです。ETL側で新しい集計を追加しているわけではありません)。カテゴリを複数選択した場合は選択カテゴリの合算値になります。</p>
 
 
 
@@ -549,7 +550,7 @@ html = r'''<!DOCTYPE html>
 
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="dtMinorChart"></canvas></div>
-  <div class="card table-section"><div id="dtMinorTable" class="detail-table"></div></div>
+  <div class="card table-section cause-pivot"><div id="dtMinorTable"></div></div>
 
   <h2>小項目別の推移</h2>
   <div class="card major-chart-card"><canvas id="dtMinorTrend"></canvas></div>
@@ -562,7 +563,7 @@ html = r'''<!DOCTYPE html>
 
 </div>
 
-<!-- ============ ③ 全カテゴリページ ============ -->
+<!-- ============ ② 全カテゴリページ ============ -->
 <div class="page-section" id="page-allcategory">
 
   <h2>カテゴリ別 所見</h2>
@@ -613,7 +614,7 @@ html = r'''<!DOCTYPE html>
   <div class="card table-section">
     <h3 id="catMatrixTableTitle">期間 × カテゴリ 一覧</h3>
     <div id="catMatrixTable" style="overflow-x:auto;"></div>
-    <p class="note">行がカテゴリ、列が期間です。色が濃いほど値が大きいことを示します（率は各指標の最大値で正規化）。いちばん右の列は選択期間の合計（率は分子・分母をそれぞれ合計してから割り直した値。率の平均ではありません）で、この順に並べています。率を見るときは、母数（出荷数・出品数・売上）が全体の0.5%に満たないカテゴリは「1件で50%」のような極端な値になるため、灰色にして下にまとめています。上部の「期間粒度」を切り替えると週次・月次・四半期などに変わります。拠点フィルタはこの表には掛かりません（全拠点合計）。</p>
+    <p class="note">行がカテゴリ、列が期間です。色が濃いほど値が大きいことを示します（率は各指標の最大値で正規化）。いちばん右の列は選択期間の合計（率は分子・分母をそれぞれ合計してから割り直した値。率の平均ではありません）で、この順に並べています。率を見るときは、母数（出荷数・出品数・売上）が全体の0.5%に満たないカテゴリは「1件で50%」のような極端な値になるため、灰色にして下にまとめています。上部の「期間粒度」を切り替えると週次・月次・四半期などに変わります。拠点フィルタはこの表には掛かりません（全拠点合計）。カテゴリ別のSR原因を深掘りしたいときは③カテゴリ詳細ページをご覧ください。</p>
   </div>
 
   <h2>カテゴリ別 内訳比較(件数・率・金額を全カテゴリ並べて表示) <span id="periodLabelCat" class="badge"></span></h2>
@@ -630,13 +631,26 @@ html = r'''<!DOCTYPE html>
   </div>
 
 
-  <hr style="margin:26px 0 18px; border:none; border-top:2px solid #e3e5e8;">
-  <p class="drill-title">SR改善分析 <span id="acImpPeriod" class="badge"></span></p>
+</div>
+
+<!-- ============ ③ カテゴリ詳細(SR改善分析)ページ ============ -->
+<!-- ②全カテゴリページから切り出したSR改善分析。カテゴリを選んで絞り込める。 -->
+<div class="page-section" id="page-catdetail">
+
+  <p class="drill-title"><span id="acDrillTitle">SR改善分析 ― 全カテゴリ</span> <span id="acImpPeriod" class="badge"></span></p>
+
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>カテゴリ(複数選択可。Ctrl/Cmd(Macは⌘)+クリックで複数選択すると合算します。「(全カテゴリ)」または未選択で全カテゴリ)</label>
+      <select id="acCatMultiSelect" multiple size="8" style="min-width:260px;"></select>
+    </div>
+  </div>
+
   <div class="card insight-box"><div class="insight-text" id="acImpInsight"></div></div>
 
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="acMinorChart"></canvas></div>
-  <div class="card table-section"><div id="acMinorTable" class="detail-table"></div></div>
+  <div class="card table-section cause-pivot"><div id="acMinorTable"></div></div>
 
   <h2>小項目別の推移</h2>
   <div class="card major-chart-card"><canvas id="acMinorTrend"></canvas></div>
@@ -650,8 +664,8 @@ html = r'''<!DOCTYPE html>
 </div>
 
 <!-- ============ ④ カテゴリ別ページ(1カテゴリドリルダウン) ============ -->
-<!-- ============ ⑤ 拠点×カテゴリ ページ(2軸クロスフィルタ) ============ -->
-<!-- ============ ⑥ コンディション・価格帯別分析ページ ============ -->
+<!-- ============ ④ 拠点×カテゴリ ページ(2軸クロスフィルタ) ============ -->
+<!-- ============ ⑤⑥ コンディション・価格帯別分析ページ ============ -->
 <div class="page-section" id="page-condition">
 
   <div class="controls" style="margin-bottom:14px;">
@@ -764,7 +778,7 @@ html = r'''<!DOCTYPE html>
 
 </div>
 
-<!-- ============ ⑦ 粗利差異分析ページ ============ -->
+<!-- ============ ⑦ 粗利差異分析ページ(番号変更なし) ============ -->
 
 <div class="page-section" id="page-profitvariance">
 
@@ -1504,6 +1518,19 @@ if (deficitCatMultiSel) {
   deficitCatMultiSel.appendChild(allOpt);
   allOpt.selected = true;
   deficitCategories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; deficitCatMultiSel.appendChild(o); });
+}
+
+// ③カテゴリ詳細(SR改善分析)ページ用の複数選択カテゴリセレクタ。
+// 選択肢はSR分類データ(SR_MAJOR_ROWS)に実在するカテゴリ。初期状態は「(全カテゴリ)」。
+const acCategories = Array.from(new Set(SR_MAJOR_ROWS.map(r => r.category))).filter(Boolean).sort();
+const acCatMultiSel = document.getElementById('acCatMultiSelect');
+if (acCatMultiSel) {
+  const allOpt = document.createElement('option');
+  allOpt.value = ALL_CAT; allOpt.textContent = '(全カテゴリ)';
+  acCatMultiSel.appendChild(allOpt);
+  allOpt.selected = true;
+  acCategories.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; acCatMultiSel.appendChild(o); });
+  acCatMultiSel.addEventListener('change', () => { if (currentPage === 'catdetail') renderPageContent(); });
 }
 
 // F項目: ⑦ページのカテゴリ別詳細粗利指標(CATEGORY_PROFIT_DETAIL_ROWS)推移グラフ用の
@@ -2306,13 +2333,14 @@ function renderImprovementSection(prefix, rowFilter) {
     }
   });
 
-  const minorBody = minorList.slice(0, 20).map(([k, v]) =>
-    '<tr>' + impCell(k) + impCell(fmtInt(v), { num: 1 }) +
-    impCell(srTotal ? fmtPct(v / srTotal) : '-', { num: 1 }) + '</tr>').join('') +
-    '<tr>' + impCell('合計', { bg: '#eef1f5', bold: 1 }) + impCell(fmtInt(srTotal), { num: 1, bg: '#eef1f5', bold: 1 }) +
-    impCell('100.00%', { num: 1, bg: '#eef1f5', bold: 1 }) + '</tr>';
-  const mt = el('MinorTable');
-  if (mt) mt.innerHTML = impTable([{ name: '小項目(大項目 > 小項目)' }, { name: 'SR件数', num: 1 }, { name: '構成比', num: 1 }], minorBody);
+  // 「大項目(小計) → 小項目」の階層表示にする(原因元→原因分類の表と同じ形式)。
+  // 元データは大項目・小項目・件数を持つので、既存のピボット表描画をそのまま使う。
+  const minorPivotRows = srRows.map(r => ({
+    major: r.major || '(大項目なし)',
+    minor: r.minor || '(小項目なし)',
+    count: r.count || 0
+  }));
+  renderCausePivotTableInto(prefix + 'MinorTable', minorPivotRows, 'major', 'minor', '大項目', '小項目');
 
   // --- 小項目別の推移(上位6) ---
   const periods = availablePeriods(granularity);
@@ -4573,7 +4601,19 @@ function renderAllCategoryPage() {
   renderCategoryBreakdown();
   renderCategorySrMajorChart();
   renderDetailTable('category');
-  renderImprovementSection('ac', null);
+}
+
+// ---------- ③ カテゴリ詳細(SR改善分析)ページ ----------
+// ②から切り出したSR改善分析。カテゴリを選んで絞り込める(未選択・(全カテゴリ)は全件)。
+function renderCatDetailPage() {
+  const cats = acCatMultiSel ? getMultiSelectValues(acCatMultiSel) : [];
+  const isAll = cats.length === 0 || cats.includes(ALL_CAT);
+  const catSet = isAll ? null : new Set(cats);
+  const label = isAll ? '全カテゴリ'
+    : (cats.length === 1 ? cats[0] : cats.join(' + ') + '(合算・' + cats.length + 'カテゴリ)');
+  const t = document.getElementById('acDrillTitle');
+  if (t) t.textContent = 'SR改善分析 ― ' + label;
+  renderImprovementSection('ac', catSet ? (r => catSet.has(r.category)) : null);
 }
 
 // ---------- 比較KPIカード(②/④で使用) ----------
@@ -4907,6 +4947,7 @@ function renderPageContent() {
   if (currentPage === 'overall') renderOverallPage();
   else if (currentPage === 'detail') renderDetailPage();
   else if (currentPage === 'allcategory') renderAllCategoryPage();
+  else if (currentPage === 'catdetail') renderCatDetailPage();
   else if (currentPage === 'condition') renderConditionPage();
   else if (currentPage === 'priceband') renderPriceBandPage();
   else if (currentPage === 'deficit') renderDeficitPage();
@@ -4914,10 +4955,10 @@ function renderPageContent() {
   else renderProfitVariancePage();
 }
 
-const ALL_PAGES = ['overall', 'allcategory', 'detail', 'condition', 'priceband', 'profitvariance', 'deficit', 'customer'];
+const ALL_PAGES = ['overall', 'allcategory', 'catdetail', 'detail', 'condition', 'priceband', 'profitvariance', 'deficit', 'customer'];
 const PAGE_NAV_MAP = {
-  overall: 'navBtnOverall', detail: 'navBtnDetail', allcategory: 'navBtnAllCategory',
-  condition: 'navBtnCondition', priceband: 'navBtnPriceBand',
+  overall: 'navBtnOverall', allcategory: 'navBtnAllCategory', catdetail: 'navBtnCatDetail',
+  detail: 'navBtnDetail', condition: 'navBtnCondition', priceband: 'navBtnPriceBand',
   profitvariance: 'navBtnProfitVariance', deficit: 'navBtnDeficit', customer: 'navBtnCustomer'
 };
 
