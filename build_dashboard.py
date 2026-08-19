@@ -603,6 +603,13 @@ html = r'''<!DOCTYPE html>
       </select>
     </div>
     <div class="ctl">
+      <label>母数の少ないカテゴリ</label>
+      <select id="catMatrixLowVol">
+        <option value="hide" selected>非表示(既定)</option>
+        <option value="show">表示する</option>
+      </select>
+    </div>
+    <div class="ctl">
       <label>表示する期間</label>
       <select id="catMatrixSpan">
         <option value="12">直近12期間</option>
@@ -616,7 +623,7 @@ html = r'''<!DOCTYPE html>
   <div class="card table-section">
     <h3 id="catMatrixTableTitle">期間 × カテゴリ 一覧</h3>
     <div id="catMatrixTable" style="overflow-x:auto;"></div>
-    <p class="note">行がカテゴリ、列が期間です。色が濃いほど値が大きいことを示します（率は各指標の最大値で正規化）。いちばん右の列は選択期間の合計（率は分子・分母をそれぞれ合計してから割り直した値。率の平均ではありません）で、この順に並べています。率を見るときは、母数（出荷数・出品数・売上）が全体の0.5%に満たないカテゴリは「1件で50%」のような極端な値になるため、灰色にして下にまとめています。上部の「期間粒度」を切り替えると週次・月次・四半期などに変わります。拠点フィルタはこの表には掛かりません（全拠点合計）。カテゴリ別のSR原因を深掘りしたいときは③カテゴリ詳細ページをご覧ください。</p>
+    <p class="note">行がカテゴリ、列が期間です。色が濃いほど値が大きいことを示します（率は各指標の最大値で正規化）。いちばん右の列は選択期間の合計（率は分子・分母をそれぞれ合計してから割り直した値。率の平均ではありません）で、この順に並べています。母数（出荷数・出品数・売上）が全体の0.5%に満たないカテゴリは「1件で50%」のような極端な値になるため、既定では非表示にしています。上の「母数の少ないカテゴリ」を「表示する」に切り替えると、灰色の行として表の下に出ます。上部の「期間粒度」を切り替えると週次・月次・四半期などに変わります。拠点フィルタはこの表には掛かりません（全拠点合計）。カテゴリ別のSR原因を深掘りしたいときは③カテゴリ詳細ページをご覧ください。</p>
   </div>
 
   <h2>カテゴリ別 内訳比較(件数・率・金額を全カテゴリ並べて表示) <span id="periodLabelCat" class="badge"></span></h2>
@@ -4500,24 +4507,29 @@ function renderCategoryMatrix() {
   // 合計値の大きい順に並べる(率も合計基準)。
   // ただし率の場合、母数が数件しかないカテゴリは「1件で50%」のような極端な値になり
   // 上位を占めてしまうため、母数が MIN_DEN 未満のものは下にまとめる。
-  // 閾値は「全カテゴリの母数合計の0.5%」。母数が金額(売上)でも件数(出荷数・出品数)でも
-  // 同じ考え方で効くように、絶対値ではなく全体に対する比率で判定する。
+  // 「母数が少ないカテゴリ」の判定。閾値は全カテゴリの母数合計の0.5%とし、
+  // 金額(売上)でも件数(出荷数・出品数)でも同じ考え方で効くように比率で判定する。
+  // 率の指標はその指標の分母、件数・金額の指標は出荷数を母数とみなす。
   const denTotal = (o) => o.den.reduce((a, v) => a + v, 0);
-  let MIN_DEN = 0;
-  if (spec.den) {
-    let sum = 0;
-    cats.forEach(o => { sum += denTotal(o); });
-    MIN_DEN = sum * 0.005;
-  }
-  const ordered = Array.from(cats.entries())
-    .map(([name, o]) => ({ name, o, total: totalOf(o), den: spec.den ? denTotal(o) : null }))
+  const volOf = (o) => (spec.den ? denTotal(o) : o.ship);
+  let volSum = 0;
+  cats.forEach(o => { volSum += volOf(o); });
+  const MIN_DEN = volSum * 0.005;
+  let ordered = Array.from(cats.entries())
+    .map(([name, o]) => ({ name, o, total: totalOf(o), vol: volOf(o) }))
+    .map(x => Object.assign(x, { low: x.vol < MIN_DEN }))
     .sort((a, b) => {
-      if (spec.den) {
-        const am = a.den >= MIN_DEN, bm = b.den >= MIN_DEN;
-        if (am !== bm) return am ? -1 : 1;
-      }
+      if (a.low !== b.low) return a.low ? 1 : -1;
       return (b.total === null ? -1 : b.total) - (a.total === null ? -1 : a.total);
     });
+  // 既定では母数の少ないカテゴリを隠す(「1件で50%」のような値が上位に並ぶのを防ぐ)。
+  const showLow = ((document.getElementById('catMatrixLowVol') || {}).value || 'hide') === 'show';
+  const lowCount = ordered.filter(x => x.low).length;
+  if (!showLow) ordered = ordered.filter(x => !x.low);
+  if (!ordered.length) {
+    wrap.innerHTML = '<p class="note">表示できるカテゴリがありません(母数の少ないカテゴリを「表示する」に切り替えてください)。</p>';
+    return;
+  }
 
   // ---- グラフ: 出荷数の多い上位カテゴリを折れ線で重ねる ----
   const chartCats = Array.from(cats.entries())
@@ -4578,12 +4590,11 @@ function renderCategoryMatrix() {
     '<th style="' + th + 'text-align:left;position:sticky;left:0;z-index:1;">カテゴリ</th>';
   periods.forEach(p => { html += '<th style="' + th + '">' + p.label + '</th>'; });
   html += '<th style="' + th + '">合計</th></tr></thead><tbody>';
-  ordered.forEach(({ name, o, total, den }) => {
-    const faint = (spec.den && den < MIN_DEN);
+  ordered.forEach(({ name, o, total, vol, low }) => {
+    const faint = low;
     html += '<tr><td style="padding:5px 8px;border:1px solid #e3e5e8;white-space:nowrap;font-weight:600;'
       + 'position:sticky;left:0;background:#fff;z-index:1;font-size:11.5px;'
-      + (faint ? 'color:#98a2ad;' : '') + '" title="'
-      + (spec.den ? '母数 合計 ' + fmtInt(den) : '') + '">' + name
+      + (faint ? 'color:#98a2ad;' : '') + '" title="母数 合計 ' + fmtInt(vol) + '">' + name
       + (faint ? ' <span style="font-weight:400;font-size:10px;">(母数少)</span>' : '') + '</td>';
     periods.forEach((p, i) => {
       const v = valueAt(o, i);
@@ -4592,7 +4603,11 @@ function renderCategoryMatrix() {
     });
     html += '<td style="' + td + 'background:#f5f6f8;font-weight:700;">' + fmtVal(total) + '</td></tr>';
   });
-  wrap.innerHTML = html + '</tbody></table>';
+  const hiddenNote = (!showLow && lowCount)
+    ? '<p class="note" style="margin-top:8px;">母数の少ないカテゴリ ' + lowCount +
+      '件を非表示にしています(上の「母数の少ないカテゴリ」を「表示する」にすると出ます)。</p>'
+    : '';
+  wrap.innerHTML = html + '</tbody></table>' + hiddenNote;
 }
 
 function renderAllCategoryPage() {
@@ -5042,7 +5057,7 @@ if (detailCatMultiSel) detailCatMultiSel.addEventListener('change', () => { if (
 if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
 {
   // ②全カテゴリ: 期間×カテゴリ マトリクスのセレクタ(この表だけ描き直せばよい)
-  ['catMatrixMetric', 'catMatrixTopN', 'catMatrixSpan'].forEach(id => {
+  ['catMatrixMetric', 'catMatrixTopN', 'catMatrixSpan', 'catMatrixLowVol'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', () => { if (currentPage === 'allcategory') renderCategoryMatrix(); });
   });
