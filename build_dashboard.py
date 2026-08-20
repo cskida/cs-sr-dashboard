@@ -657,6 +657,18 @@ html = r'''<!DOCTYPE html>
 
   <div class="card insight-box"><div class="insight-text" id="acImpInsight"></div></div>
 
+  <!-- 選択カテゴリの昨対比較。決算月(7月〜6月)を横軸に、期ごとの系列を重ねる。 -->
+  <h2>昨対比較（期別） <span id="acYoyScope" class="badge"></span></h2>
+  <div class="mini-charts-grid">
+    <div class="card mini-chart-card"><canvas id="acYoyRefund"></canvas></div>
+    <div class="card mini-chart-card"><canvas id="acYoySr"></canvas></div>
+  </div>
+  <div class="mini-charts-grid">
+    <div class="card mini-chart-card"><canvas id="acYoyQuestion"></canvas></div>
+    <div class="card mini-chart-card"><canvas id="acYoyInquiry"></canvas></div>
+  </div>
+  <p class="note">上部のカテゴリ選択に連動します。棒が件数・金額、折れ線が率です。横軸は決算月（7月〜6月）で、20期と21期を重ねて表示します。返金額率＝返金額÷売上、SR率＝SR件数÷出荷数、質問率＝質問数÷出品数、問合せ率＝問合せ件数÷出荷数。</p>
+
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="acMinorChart"></canvas></div>
   <div class="card table-section cause-pivot"><div id="acMinorTable"></div></div>
@@ -4773,6 +4785,29 @@ if (typeof document.addEventListener === 'function') {
   });
 }
 
+// ③カテゴリ詳細: 選択カテゴリの昨対比較(返金/SR/質問/問合せ)を4枚描く。
+// 期間粒度に関係なく、決算月(7月〜6月)×期の比較として常に表示する。
+function renderCatDetailYoy(catSet, label) {
+  const scope = document.getElementById('acYoyScope');
+  if (scope) scope.textContent = label;
+  const rowFilter = catSet ? (r => catSet.has(r.category)) : null;
+  const ser = buildYoyGeneric(ROWS, ['refund_amount', 'refund_count', 'sales_amount',
+    'sr_count', 'shipped_count', 'question_count', 'listed_count', 'inquiry_count'], rowFilter);
+  const specs = [
+    ['acYoyRefund', 'refund_amount', d => d.sales_amount ? d.refund_amount / d.sales_amount : null,
+      '返金額', '返金額率', '金額(¥)', true, '返金額・返金額率'],
+    ['acYoySr', 'sr_count', d => d.shipped_count ? d.sr_count / d.shipped_count : null,
+      'SR件数', 'SR率', '件数', false, 'SR件数・SR率'],
+    ['acYoyQuestion', 'question_count', d => d.listed_count ? d.question_count / d.listed_count : null,
+      '質問数', '質問率', '件数', false, '質問数・質問率'],
+    ['acYoyInquiry', 'inquiry_count', d => d.shipped_count ? d.inquiry_count / d.shipped_count : null,
+      '問合せ件数', '問合せ率', '件数', false, '問合せ件数・問合せ率(落札後の商品質問)']
+  ];
+  specs.forEach(([id, bar, rateFn, barLabel, lineLabel, leftLabel, money, title]) => {
+    renderChart(id, yoyGenericConfig(ser, bar, rateFn, barLabel, lineLabel, leftLabel, money, title));
+  });
+}
+
 function renderCatDetailPage() {
   const cats = acCatMultiSel ? getMultiSelectValues(acCatMultiSel) : [];
   const isAll = cats.length === 0 || cats.includes(ALL_CAT);
@@ -4781,6 +4816,7 @@ function renderCatDetailPage() {
     : (cats.length === 1 ? cats[0] : cats.join(' + ') + '(合算・' + cats.length + 'カテゴリ)');
   const t = document.getElementById('acDrillTitle');
   if (t) t.textContent = 'カテゴリ詳細 ― ' + label;
+  renderCatDetailYoy(catSet, label);
   renderImprovementSection('ac', catSet ? (r => catSet.has(r.category)) : null);
   if (causeDrillMajor) renderCauseDetailDrill('ac', causeDrillMajor);
 }
