@@ -412,7 +412,7 @@ html = r'''<!DOCTYPE html>
     <div id="yoyTableLocCat"></div>
   </div>
 
-  <h2>推移(選択拠点×カテゴリ vs 全社平均) <span class="badge">実線=選択条件 / 破線=全社平均</span></h2>
+  <h2>推移(選択拠点×カテゴリ vs 全社平均) <span class="badge" id="lcTrendBaseBadge">実線=選択条件 / 破線=全社平均</span></h2>
   <div class="charts-grid">
     <div class="card chart-card"><h3>ヤフオク質問 件数・率</h3><canvas id="lcTrend_question"></canvas></div>
     <div class="card chart-card"><h3>SR発生 件数・率</h3><canvas id="lcTrend_sr"></canvas></div>
@@ -667,7 +667,7 @@ html = r'''<!DOCTYPE html>
     <div class="card mini-chart-card"><canvas id="acYoyQuestion"></canvas></div>
     <div class="card mini-chart-card"><canvas id="acYoyInquiry"></canvas></div>
   </div>
-  <p class="note">上部のカテゴリ選択に連動します。棒が件数・金額、折れ線が率です。横軸は決算月（7月〜6月）で、20期と21期を重ねて表示します。返金額率＝返金額÷売上、SR率＝SR件数÷出荷数、質問率＝質問数÷出品数、問合せ率＝問合せ件数÷出荷数。</p>
+  <p class="note">上部のカテゴリ選択に連動します。棒が件数・金額、実線の折れ線が選択カテゴリの率、<b>灰色の破線が同じ期の全社平均（全カテゴリ）の率</b>です。横軸は決算月（7月〜6月）で、20期と21期を重ねて表示します。返金額率＝返金額÷売上、SR率＝SR件数÷出荷数、質問率＝質問数÷出品数、問合せ率＝問合せ件数÷出荷数。</p>
 
   <h2>小項目別の件数・損失額</h2>
   <div class="card major-chart-card"><canvas id="acMinorChart"></canvas></div>
@@ -4789,10 +4789,18 @@ if (typeof document.addEventListener === 'function') {
 // 期間粒度に関係なく、決算月(7月〜6月)×期の比較として常に表示する。
 function renderCatDetailYoy(catSet, label) {
   const scope = document.getElementById('acYoyScope');
-  if (scope) scope.textContent = label;
+  if (scope) {
+    scope.textContent = catSet
+      ? (label + '　実線=' + label + ' / 破線=全社平均(全カテゴリ)')
+      : (label + '(= 全社)');
+  }
   const rowFilter = catSet ? (r => catSet.has(r.category)) : null;
-  const ser = buildYoyGeneric(ROWS, ['refund_amount', 'refund_count', 'sales_amount',
-    'sr_count', 'shipped_count', 'question_count', 'listed_count', 'inquiry_count'], rowFilter);
+  const FIELDS = ['refund_amount', 'refund_count', 'sales_amount',
+    'sr_count', 'shipped_count', 'question_count', 'listed_count', 'inquiry_count'];
+  const ser = buildYoyGeneric(ROWS, FIELDS, rowFilter);
+  // 選択カテゴリを全社(全カテゴリ)水準と比べられるように破線を重ねる。
+  // 全カテゴリ選択時は選択=全社で線が重なるだけなので破線は出さない。
+  const baseSer = catSet ? buildYoyGeneric(ROWS, FIELDS, null) : null;
   const specs = [
     ['acYoyRefund', 'refund_amount', d => d.sales_amount ? d.refund_amount / d.sales_amount : null,
       '返金額', '返金額率', '金額(¥)', true, '返金額・返金額率'],
@@ -4804,7 +4812,8 @@ function renderCatDetailYoy(catSet, label) {
       '問合せ件数', '問合せ率', '件数', false, '問合せ件数・問合せ率(落札後の商品質問)']
   ];
   specs.forEach(([id, bar, rateFn, barLabel, lineLabel, leftLabel, money, title]) => {
-    renderChart(id, yoyGenericConfig(ser, bar, rateFn, barLabel, lineLabel, leftLabel, money, title));
+    renderChart(id, yoyGenericConfig(ser, bar, rateFn, barLabel, lineLabel, leftLabel, money, title,
+      baseSer, '全社平均'));
   });
 }
 
@@ -4874,9 +4883,12 @@ function buildYoyMonthlySeries(rowFilter) {
   };
 }
 
-function yoyMonthlyConfig(series, barField, lineField, barLabel, lineLabel, leftLabel, isMoney) {
+// baseSeries を渡すと「全社平均(比較対象)」の率を灰色の破線で重ねる。
+// 月次(昨対)表示のときも「実線=選択条件 / 破線=全社平均」の比較が崩れないようにするため。
+function yoyMonthlyConfig(series, barField, lineField, barLabel, lineLabel, leftLabel, isMoney, baseSeries, baseLabel) {
   const barColors = ['#c9dbfa', '#8fb3f0', '#5b8def', '#12203f'];
   const lineColors = ['#f0b7a4', '#e8916f', '#e0653a', '#a83a17'];
+  const baseColors = ['#c4c9d1', '#9aa2ae', '#6f7885', '#4a515c'];
   const datasets = [];
   series.fyNums.forEach((fy, i) => {
     datasets.push({
@@ -4893,6 +4905,20 @@ function yoyMonthlyConfig(series, barField, lineField, barLabel, lineLabel, left
       tension: 0.25, spanGaps: true, order: 1
     });
   });
+  if (baseSeries) {
+    series.fyNums.forEach((fy, i) => {
+      const data = series.months.map(m => {
+        const d = baseSeries.get(fy, m); const v = d ? d[lineField] : null;
+        return v == null ? null : v * 100;
+      });
+      if (!data.some(v => v != null)) return;
+      datasets.push({
+        type: 'line', label: ordinalSuffix(fy) + ' ' + (baseLabel || '全社平均') + lineLabel, yAxisID: 'y1',
+        data, borderColor: baseColors[i % baseColors.length], backgroundColor: baseColors[i % baseColors.length],
+        borderDash: [5, 4], borderWidth: 1.6, pointRadius: 1.8, tension: 0.25, spanGaps: true, order: 0
+      });
+    });
+  }
   return {
     type: 'bar',
     data: { labels: series.labels, datasets },
@@ -4933,9 +4959,11 @@ function buildYoyGeneric(rowsArr, fields, rowFilter) {
 }
 
 // 昨対の棒(+任意で率の折れ線)グラフ設定を作る
-function yoyGenericConfig(series, barField, rateFn, barLabel, lineLabel, leftLabel, isMoney, title) {
+// baseSeries を渡すと比較対象(全社/全カテゴリ)の率を灰色の破線で重ねる。
+function yoyGenericConfig(series, barField, rateFn, barLabel, lineLabel, leftLabel, isMoney, title, baseSeries, baseLabel) {
   const barColors = ['#c9dbfa', '#8fb3f0', '#5b8def', '#12203f'];
   const lineColors = ['#f0b7a4', '#e8916f', '#e0653a', '#a83a17'];
+  const baseColors = ['#c4c9d1', '#9aa2ae', '#6f7885', '#4a515c'];
   const datasets = [];
   series.fyNums.forEach((fy, i) => datasets.push({
     type: 'bar', label: ordinalSuffix(fy) + ' ' + barLabel, yAxisID: 'y', order: 2,
@@ -4949,6 +4977,20 @@ function yoyGenericConfig(series, barField, rateFn, barLabel, lineLabel, leftLab
       borderColor: lineColors[i % lineColors.length], backgroundColor: lineColors[i % lineColors.length],
       tension: 0.25, spanGaps: true
     }));
+    if (baseSeries) {
+      series.fyNums.forEach((fy, i) => {
+        const data = series.months.map(m => {
+          const d = baseSeries.get(fy, m); const v = d ? rateFn(d) : null;
+          return v == null ? null : v * 100;
+        });
+        if (!data.some(v => v != null)) return;
+        datasets.push({
+          type: 'line', label: ordinalSuffix(fy) + ' ' + (baseLabel || '全社平均') + lineLabel, yAxisID: 'y1', order: 0,
+          data, borderColor: baseColors[i % baseColors.length], backgroundColor: baseColors[i % baseColors.length],
+          borderDash: [5, 4], borderWidth: 1.6, pointRadius: 1.8, tension: 0.25, spanGaps: true
+        });
+      });
+    }
   }
   const scales = {
     y: { position: 'left', beginAtZero: true, title: { display: true, text: leftLabel },
@@ -4970,12 +5012,19 @@ function yoyGenericConfig(series, barField, rateFn, barLabel, lineLabel, leftLab
 // 月次かどうか(=昨対比較表示にするか)
 function isYoyMode() { return granSel.value === 'month'; }
 
-function renderComparisonTrendCharts(prefix, rowFilter) {
+// baseFilter: 破線(比較対象)の絞り込み。省略すると全社(全拠点×全カテゴリ)。
+// baseName: 凡例に出す比較対象の名前(例「全社平均(カメラ)」)。
+function renderComparisonTrendCharts(prefix, rowFilter, baseFilter, baseName) {
   const granularity = granSel.value;
+  const base = baseFilter || null;
   const trendSel = buildTrendAligned(granularity, rowFilter);
-  const trendAll = buildTrendAligned(granularity, null);
+  const trendAll = buildTrendAligned(granularity, base);
   const labels = trendSel.map(t => t.label);
   const yoySeries = (granularity === 'month') ? buildYoyMonthlySeries(rowFilter) : null;
+  // 月次(昨対)表示でも全社平均の破線を出す。以前は昨対に切り替わると破線が消えて
+  // 見出しの「破線=全社平均」と実際の表示が食い違っていた。
+  const yoyBase = (granularity === 'month') ? buildYoyMonthlySeries(base) : null;
+  const basePrefix = baseName || '全社平均';
 
   const specs = [
     { key: 'inquiry', bar: 'inquiry_count', line: 'inquiry_rate', barLabel: '問合せ件数', lineLabel: '問合せ率', baseLabel: '平均問合せ率', leftLabel: '件数', money: false },
@@ -4988,13 +5037,14 @@ function renderComparisonTrendCharts(prefix, rowFilter) {
 
   specs.forEach(s => {
     if (yoySeries && yoySeries.fyNums.length > 1) {
-      // 月次では期をまたいだ同月比較(昨対)にする
+      // 月次では期をまたいだ同月比較(昨対)にする。比較対象の率は破線で重ねる。
       renderChart(prefix + '_' + s.key, yoyMonthlyConfig(
-        yoySeries, s.bar, s.line, s.barLabel, s.lineLabel, s.leftLabel, s.money));
+        yoySeries, s.bar, s.line, s.barLabel, s.lineLabel, s.leftLabel, s.money,
+        yoyBase, basePrefix));
     } else {
       renderChart(prefix + '_' + s.key, dualAxisWithBaselineConfig(
         labels, trendSel.map(t => t[s.bar]), trendSel.map(t => t[s.line]), trendAll.map(t => t[s.line]),
-        s.barLabel, s.lineLabel, s.baseLabel, s.leftLabel, s.money
+        s.barLabel, s.lineLabel, basePrefix + s.lineLabel, s.leftLabel, s.money
       ));
     }
   });
@@ -5056,7 +5106,7 @@ function renderCategoryPage() {
   renderComparisonKpis('catDrillKpiGrid', current, baseline);
   renderYoyBox('yoyBoxCategory', 'yoyTableCategory', 'yoyPeriodLabelCategory', granularity, periodKey, rowFilter);
 
-  renderComparisonTrendCharts('catTrend', rowFilter);
+  renderComparisonTrendCharts('catTrend', rowFilter, null, '全カテゴリ平均');
 
   document.getElementById('catDrillCausePivotPeriodLabel').textContent = currentPeriodLabel();
   const causeRows = CAUSE_ROWS.filter(r => catSet.has(r.category) && (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey));
@@ -5107,7 +5157,17 @@ function renderLocCatPage() {
   const baseline = computeAgg(granularity, periodKey, null);
   renderComparisonKpis('locCatKpiGrid', current, baseline);
 
-  renderComparisonTrendCharts('lcTrend', rowFilter);
+  // 破線の比較対象は「選択カテゴリの全拠点合計」にする。拠点を絞ったときに
+  // 「同じカテゴリの全社水準と比べてどうか」が見たいため(全カテゴリ平均だと
+  // カテゴリごとの水準差に埋もれてしまう)。全拠点を選んでいるときは選択と
+  // 同じ線になってしまうので、全社全体(全カテゴリ)を比較対象にする。
+  const lcBaseFilter = isAllLoc ? null : (r => catSet.has(r.category));
+  const lcBaseName = isAllLoc ? '全社平均(全カテゴリ)' : ('全社平均(' + catLabel + ')');
+  renderComparisonTrendCharts('lcTrend', rowFilter, lcBaseFilter, lcBaseName);
+  {
+    const b = document.getElementById('lcTrendBaseBadge');
+    if (b) b.textContent = '実線=' + (isAllLoc ? '全拠点' : loc) + ' × ' + catLabel + ' / 破線=' + lcBaseName;
+  }
 
   document.getElementById('locCatMajorPeriodLabel').textContent = currentPeriodLabel();
   const { majors, map: majorMap } = buildSrMajorByDim(null, granularity, periodKey, rowFilter);
