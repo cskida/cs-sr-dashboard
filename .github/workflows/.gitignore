@@ -1,0 +1,30 @@
+# このファイルの中身を、GitHubリポジトリの「.gitignore」という名前のファイルとして保存する。
+# (ファイル名の先頭のドットを忘れないこと)
+#
+# 目的: 個人情報を含むファイルや、一時ファイルが誤ってGitHubに公開されるのを防ぐ。
+
+# ▼最重要: 顧客氏名などの個人情報を含むため絶対にコミットしない
+customer_lookup.csv
+
+# サービスアカウントの認証情報(絶対にコミットしない)
+*.json.key
+sa.json
+service_account*.json
+credentials*.json
+
+# CSVパース結果のキャッシュ(再生成可能)
+.csv_parse_cache/
+.etl_checkpoints/
+
+# ローカル作業用のCSVキャッシュ(サイズが大きいためリポジトリには入れない)
+drive_cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
