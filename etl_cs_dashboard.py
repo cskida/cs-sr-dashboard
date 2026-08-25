@@ -231,6 +231,14 @@ class LiveDriveBackend(BaseDriveBackend):
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     def list_children(self, folder_id: str) -> list[DriveFile]:
+        """フォルダ直下の子(フォルダ・ファイル)を列挙する。
+
+        ※共有ドライブ(Shared Drive / 旧チームドライブ)対応:
+          Drive API v3 は既定でマイドライブしか検索対象にしないため、共有ドライブ配下の
+          ファイルは supportsAllDrives / includeItemsFromAllDrives を指定しないと
+          「エラーは出ないが0件」という結果になる。本ダッシュボードのデータは
+          共有ドライブ「CS」配下にあるため、両オプションが必須。
+        """
         results: list[DriveFile] = []
         page_token = None
         query = f"'{folder_id}' in parents and trashed = false"
@@ -242,6 +250,8 @@ class LiveDriveBackend(BaseDriveBackend):
                     fields="nextPageToken, files(id, name, mimeType)",
                     pageSize=200,
                     pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
                 )
                 .execute()
             )
@@ -255,7 +265,8 @@ class LiveDriveBackend(BaseDriveBackend):
     def download_bytes(self, file_id: str) -> bytes:
         from googleapiclient.http import MediaIoBaseDownload
 
-        request = self._service.files().get_media(fileId=file_id)
+        # 共有ドライブ上のファイルをダウンロードする場合も supportsAllDrives が必要
+        request = self._service.files().get_media(fileId=file_id, supportsAllDrives=True)
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
         done = False
@@ -2387,6 +2398,16 @@ def main() -> None:
     # 複数rootをまたいで時系列順に並べ直す(concat_and_dedupが「最後の出現を採用」する前提のため重要)
     weeks.sort(key=lambda w: w.week_start)
     print(f"[INFO] 検出した週フォルダ数: {len(weeks)}")
+
+    if not weeks:
+        # ここで止めないと、空の集計結果で既存のダッシュボードを上書きしてしまう。
+        raise SystemExit(
+            "[ERROR] 週フォルダが1件も見つかりませんでした。以下を確認してください:\n"
+            "  1. サービスアカウントが共有ドライブのメンバー(閲覧者)に追加されているか\n"
+            "  2. 指定したフォルダIDが正しいか (--roots / DASHBOARD_ROOT_IDS)\n"
+            "  3. 対象フォルダ配下にCSVファイルが存在するか\n"
+            f"  指定したroot: {root_ids}"
+        )
     for w in weeks:
         found = sorted(w.files.keys())
         print(f"  - {w.week_start}~{w.week_end}: {found}")
