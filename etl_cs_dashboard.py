@@ -110,20 +110,38 @@ EXCLUDE_LOCATION_KEYWORDS = ["csセンター", "cs_center", "鳥取", "北関東
 
 CSV_ENCODING = "cp932"
 
+# ---------------------------------------------------------------------------
+# 消費税の扱い(⑥粗利差異・⑦赤字ページの計算はすべて税抜で統一する)
+#   税抜のまま使う : 落札価格(ヤフオク落札額)
+#   税込 -> ÷1.1   : 販売価格 / 買取価格 / ヤフオク配送料 / 送料(受注_通常_出荷) / 返金額
+# 元データの税表記は運用担当者への確認結果に基づく(2026-08時点)。
+# ---------------------------------------------------------------------------
+TAX_RATE = 1.1
+
+
+def to_excl_tax(v):
+    """税込金額を税抜に換算する。"""
+    return v / TAX_RATE
+
 # ファイル名 -> 内部カテゴリキー への分類ルール(優先順に評価)
+# ファイル名は運用の時期によって新旧2通りある(どちらも中身は同じ):
+#   新: CS_登録 / CS_返金 / 受注_通常_出荷 / 受注_JPON_出荷 / 商品_出荷(JPONベース) / 商品_出品待
+#   旧: CSV_登録 / CSV_返金日 / 受注_通常_    / 受注_JPON_     / 商品V2_発送CSVアップロード / 商品V2_出品待ち_登録
+# 自動更新がどちらの命名でも動くように、両方を同じ内部キーに分類する。
 FILE_CLASSIFIERS = [
-    ("cs_bunruiyou", re.compile(r"^CS_登録【分類用】")),
-    ("cs_touroku", re.compile(r"^CS_登録(?!【分類用】)")),
-    ("cs_henkin", re.compile(r"^CS_返金")),
+    ("cs_bunruiyou", re.compile(r"^(CS|CSV)_登録【分類用】")),
+    ("cs_touroku", re.compile(r"^(CS|CSV)_登録(?!【分類用】)")),
+    ("cs_henkin", re.compile(r"^(CS_返金|CSV_返金)")),
     # 質問_登録も CS_登録 と同じ考え方で「【分類用】が存在する週はそちらを優先」する。
     # 【分類用】は通常版(24列)に カテゴリ/対応部署(J列参照。順次修正)/原因詳細/原因元/原因分類
     # の5列が追加されたもので、カテゴリが直接入っているため商品マスタ突合が不要になる。
     ("shitsumon_bunruiyou", re.compile(r"^質問_登録【分類用】")),
     ("shitsumon", re.compile(r"^質問_登録(?!【分類用】)")),
-    ("juchu_tsujo", re.compile(r"^受注_通常_出荷")),
-    ("juchu_jpon", re.compile(r"^受注_JPON_出荷")),
-    ("shohin_shukka", re.compile(r"^商品_出荷")),
-    ("shohin_shuppinmachi", re.compile(r"^商品_出品待")),
+    ("juchu_tsujo", re.compile(r"^受注_通常")),
+    ("juchu_jpon", re.compile(r"^受注_JPON")),
+    # 「商品V2_出品待ち_登録」を先に判定する(「商品V2_」で始まる点が発送用と共通のため)
+    ("shohin_shuppinmachi", re.compile(r"^(商品_出品待|商品V2_出品待)")),
+    ("shohin_shukka", re.compile(r"^(商品_出荷|商品V2_発送)")),
 ]
 
 MONTH_FOLDER_RE = re.compile(r"^(\d{4})年(\d{1,2})月$")
@@ -231,18 +249,13 @@ class LiveDriveBackend(BaseDriveBackend):
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     def list_children(self, folder_id: str) -> list[DriveFile]:
-        """フォルダ直下の子(フォルダ・ファイル)を列挙する。
-
-        ※共有ドライブ(Shared Drive / 旧チームドライブ)対応:
-          Drive API v3 は既定でマイドライブしか検索対象にしないため、共有ドライブ配下の
-          ファイルは supportsAllDrives / includeItemsFromAllDrives を指定しないと
-          「エラーは出ないが0件」という結果になる。本ダッシュボードのデータは
-          共有ドライブ「CS」配下にあるため、両オプションが必須。
-        """
         results: list[DriveFile] = []
         page_token = None
         query = f"'{folder_id}' in parents and trashed = false"
         while True:
+            # 共有ドライブ(共有ドライブ配下のフォルダ)にも対応するため、
+            # supportsAllDrives / includeItemsFromAllDrives を必ず付ける。
+            # これが無いと共有ドライブ上のファイルが1件も返らない。
             resp = (
                 self._service.files()
                 .list(
@@ -256,7 +269,17 @@ class LiveDriveBackend(BaseDriveBackend):
                 .execute()
             )
             for f in resp.get("files", []):
-                results.append(DriveFile(id=f["id"], name=f["name"], mime_type=f["mimeType"]))
+                mime = f["mimeType"]
+                name = f["name"]
+                # フォルダはそのまま。それ以外は「拡張子が.csvの通常ファイル」だけを対象にする。
+                # 手順書メモ(.txt)やGoogleスプレッドシート・ショートカットなどが同じフォルダに
+                # 置かれていても、CSVとして読もうとして落ちないようにするため。
+                if mime != GOOGLE_DRIVE_FOLDER_MIME:
+                    if mime.startswith("application/vnd.google-apps."):
+                        continue
+                    if not name.lower().endswith(".csv"):
+                        continue
+                results.append(DriveFile(id=f["id"], name=name, mime_type=mime))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -265,7 +288,6 @@ class LiveDriveBackend(BaseDriveBackend):
     def download_bytes(self, file_id: str) -> bytes:
         from googleapiclient.http import MediaIoBaseDownload
 
-        # 共有ドライブ上のファイルをダウンロードする場合も supportsAllDrives が必要
         request = self._service.files().get_media(fileId=file_id, supportsAllDrives=True)
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
@@ -406,6 +428,14 @@ def discover_week_files(backend: BaseDriveBackend, fiscal_root_id: str) -> list[
             if key == "shitsumon" and "shitsumon_bunruiyou" in week_files.files:
                 continue
             raw = backend.download_bytes(f.id)
+            # ここで一度パースしてみて、CSVとして読めないファイルは警告を出して除外する。
+            # (1ファイルの不備で全体の集計が止まらないようにするため。パース結果は
+            #  キャッシュされるので、この検証による二重パースのコストは発生しない)
+            try:
+                read_csv_bytes(raw)
+            except Exception as exc:
+                print(f"[警告] CSVとして読めないためスキップします: {f.name} ({type(exc).__name__}: {exc})", flush=True)
+                continue
             if key == "cs_bunruiyou":
                 # 分類用が来たら通常版を捨てる
                 week_files.files.pop("cs_touroku", None)
@@ -437,7 +467,7 @@ def compute_data_through(weeks: list[WeekFiles]) -> Optional[str]:
 
 
 
-_READ_CSV_CACHE: dict[int, pd.DataFrame] = {}
+_READ_CSV_CACHE: dict[str, pd.DataFrame] = {}
 
 # ディスク上のパース結果キャッシュ(実行プロセスをまたいだ高速化用)。
 # 生のCSVバイト列のMD5ハッシュをキーにpickle化したDataFrameを保存する。
@@ -457,15 +487,19 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
     加えて、実行プロセスをまたいだディスクキャッシュ(内容のMD5ハッシュ単位)も
     参照する。存在すればCP932でのCSVパースをスキップしてpickleから復元する。
     """
-    cache_key = id(raw)
-    cached = _READ_CSV_CACHE.get(cache_key)
-    if cached is not None:
-        return cached.copy()
-
+    # 【重要】キャッシュのキーは必ず「中身のハッシュ」にすること。
+    # 以前は id(raw)(メモリアドレス)をキーにしていたが、Pythonは解放されたオブジェクトの
+    # idを再利用するため、読み捨てたファイルのidを後続ファイルが再利用すると
+    # 「別のファイルのパース結果」を返してしまい、集計値が実行ごとに変わる不具合があった
+    # (同一データで SR件数が 490/566/703 と揺れる事象を確認)。
     import hashlib
     import pickle
 
     digest = hashlib.md5(raw).hexdigest()
+    cached = _READ_CSV_CACHE.get(digest)
+    if cached is not None:
+        return cached.copy()
+
     disk_cache_path = _DISK_PARSE_CACHE_DIR / f"{digest}.pkl"
     df: Optional[pd.DataFrame] = None
     if disk_cache_path.exists():
@@ -474,13 +508,32 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
         except Exception:
             df = None
     if df is None:
-        df = pd.read_csv(io.BytesIO(raw), encoding=CSV_ENCODING, dtype=str, low_memory=False)
+        # 週次エクスポートは基本CP932だが、担当者がUTF-8で保存し直したファイルが
+        # 混在することがある(Excelやスプレッドシート経由で保存すると起こりうる)。
+        # 文字コード違いだけで全体の集計が止まらないよう、候補を順に試す。
+        # 最後の手段として置換モードで読むが、その場合は警告を出す。
+        last_err = None
+        for enc in (CSV_ENCODING, "utf-8-sig", "utf-8", "cp932"):
+            try:
+                df = pd.read_csv(io.BytesIO(raw), encoding=enc, dtype=str, low_memory=False)
+                if enc != CSV_ENCODING:
+                    print(f"[情報] CP932以外の文字コードで読み込みました: {enc}", flush=True)
+                break
+            except UnicodeDecodeError as e:
+                last_err = e
+                df = None
+        if df is None:
+            print(f"[警告] 文字コードを判定できないため、読めない文字を置換して読み込みます: {last_err}", flush=True)
+            df = pd.read_csv(
+                io.BytesIO(raw), encoding=CSV_ENCODING, encoding_errors="replace",
+                dtype=str, low_memory=False,
+            )
         try:
             _DISK_PARSE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             disk_cache_path.write_bytes(pickle.dumps(df))
         except Exception:
             pass
-    _READ_CSV_CACHE[cache_key] = df
+    _READ_CSV_CACHE[digest] = df
     return df.copy()
 
 
@@ -537,6 +590,31 @@ def normalize_product_id(pid) -> Optional[str]:
     return s or None
 
 
+def to_datetime_any(values) -> pd.Series:
+    """日付列を書式混在でも取りこぼさずに変換する。
+
+    週次エクスポートの日付書式は運用の途中で変わることがある。
+      旧: 2025/7/1 0:00
+      新: 2026-08-13 00:00:00
+    pandas の to_datetime は、列全体から1つの書式を推定してから適用するため、
+    複数週のファイルを結合したあとに変換すると「推定した書式と違う行」がすべて
+    NaT になる。実データでは、これにより新書式の週(2026-08-13〜16)の出荷が
+    丸ごと集計から落ちる不具合が起きた。
+
+    そこで format="mixed" で行ごとに書式を判定し、それでも解釈できなかった行は
+    通常の推定でもう一度試す。どちらでも読めない行だけ NaT になる。
+    """
+    ser = values if isinstance(values, pd.Series) else pd.Series(values)
+    try:
+        dt = pd.to_datetime(ser, errors="coerce", format="mixed")
+    except (TypeError, ValueError):
+        dt = pd.to_datetime(ser, errors="coerce")
+    if dt.isna().any():
+        retry = pd.to_datetime(ser[dt.isna()], errors="coerce")
+        dt = dt.fillna(retry)
+    return dt
+
+
 def to_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(
         series.astype(str).str.replace(",", "", regex=False).str.strip(),
@@ -545,7 +623,7 @@ def to_numeric(series: pd.Series) -> pd.Series:
 
 
 def to_year_month(series: pd.Series) -> pd.Series:
-    dt = pd.to_datetime(series, errors="coerce")
+    dt = to_datetime_any(series)
     return dt.dt.strftime("%Y-%m")
 
 
@@ -559,7 +637,7 @@ def tag_by_date(df: pd.DataFrame, w: "WeekFiles", date_col: str) -> pd.DataFrame
     基準日が空/不正な行は NaN になり、各集計関数の既存の有効日フィルタで除外される。
     """
     df = df.copy()
-    dt = pd.to_datetime(df[date_col], errors="coerce")
+    dt = to_datetime_any(df[date_col])
     ds = dt.dt.strftime("%Y-%m-%d")
     df["_week_start"] = ds
     df["_week_end"] = ds
@@ -720,11 +798,49 @@ def build_ship_date_master(weeks: list[WeekFiles]) -> dict[str, str]:
     merged = jsub.merge(tsub, left_on="取引番号", right_on="受注ID", how="inner")
     merged["_norm_id"] = merged["管理番号"].map(normalize_product_id)
     merged = merged.dropna(subset=["_norm_id"])
-    dt = pd.to_datetime(merged["_ship_date"], errors="coerce")
+    dt = to_datetime_any(merged["_ship_date"])
     merged["_ship_ymd"] = dt.dt.strftime("%Y-%m-%d")
     merged = merged.dropna(subset=["_ship_ymd"])
     dedup = merged.drop_duplicates(subset=["_norm_id"], keep="first")
     return dict(zip(dedup["_norm_id"].tolist(), dedup["_ship_ymd"].tolist()))
+
+
+# コンディションランクは J/D/C/B/A/S の6段階(+ごく少数の新品(N))が正。
+# 商品_出品待など一部のファイルには「中古」「良好」「未使用」といった略記が混在するため、
+# 表記ゆれを正規のランク名に寄せる。判定できない値は「不明」に集約する。
+CONDITION_ALIASES = {
+    "ジャンク": "ジャンク(J)",
+    "程度不良": "程度不良(D)",
+    "中古": "一般中古(C)",
+    "一般中古": "一般中古(C)",
+    "良好": "程度良好(B)",
+    "程度良好": "程度良好(B)",
+    "美品": "美品(A)",
+    "未使用": "未使用品(S)",
+    "未使用品": "未使用品(S)",
+    "新品": "新品(N)",
+}
+CANONICAL_CONDITIONS = {
+    "ジャンク(J)", "程度不良(D)", "一般中古(C)", "程度良好(B)", "美品(A)", "未使用品(S)", "新品(N)",
+}
+
+
+def normalize_condition(value) -> str:
+    """状態の表記ゆれを正規のコンディションランク名に揃える。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "不明"
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return "不明"
+    if s in CANONICAL_CONDITIONS:
+        return s
+    if s in CONDITION_ALIASES:
+        return CONDITION_ALIASES[s]
+    # 「一般中古(C)」のように括弧付きで来た場合や前後に余計な文字がある場合に備える
+    for alias, canon in CONDITION_ALIASES.items():
+        if alias in s:
+            return canon
+    return "不明"
 
 
 def is_junk_status(status) -> bool:
@@ -823,7 +939,7 @@ def aggregate_cs_sr(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFra
     all_df = all_df[~through_mask].copy()
 
     # 登録日時が有効な行のみを対象とする(基準日そのものは週フォルダの範囲を採用)
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
@@ -879,6 +995,159 @@ def extract_major_category(bunrui_cell) -> Optional[str]:
     return m.group(2).strip()
 
 
+def extract_minor_category(bunrui_cell) -> Optional[str]:
+    """「分類」列から小項目(3階層目)を抽出する。
+
+    例: "SR > 商品説明 > 商品説明不足" -> "商品説明不足"
+    大項目と同じく、複数選択(改行区切り)のセルは最初の1つを採用する。
+    """
+    if bunrui_cell is None or (isinstance(bunrui_cell, float) and pd.isna(bunrui_cell)):
+        return None
+    s = str(bunrui_cell).strip()
+    if not s or s.lower() == "nan":
+        return None
+    m = BUNRUI_RE.match(s.splitlines()[0].strip())
+    if not m:
+        return None
+    minor = m.group(3).strip()
+    return minor or None
+
+
+# CS_返金の「管理用メモ」に運用で記載される原因情報を取り出すための正規表現。
+# 実データの書式:
+#   【原因元】\n本体\n【原因分類】\n動作不備\n【原因詳細】\nハードディスクの不具合
+# 空行が入る場合もあるため、タグの直後の最初の非空行を値として拾う。
+MEMO_TAG_RE = {
+    "cause_part": re.compile(r"【原因元】\s*\n\s*([^\n【]+)"),
+    "cause_major": re.compile(r"【原因分類】\s*\n\s*([^\n【]+)"),
+    "cause_detail": re.compile(r"【原因詳細】\s*\n\s*([^\n【]+)"),
+}
+
+
+def parse_memo_cause(memo) -> tuple[Optional[str], Optional[str]]:
+    """管理用メモから (原因分類, 原因元) を取り出す。無ければ (None, None)。"""
+    cm, cp, _ = parse_memo_cause3(memo)
+    return (cm, cp)
+
+
+def parse_memo_cause3(memo) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """管理用メモから (原因分類, 原因元, 原因詳細) を取り出す。無ければ全てNone。"""
+    if memo is None or (isinstance(memo, float) and pd.isna(memo)):
+        return (None, None, None)
+    text = str(memo)
+    if "【原因" not in text:
+        return (None, None, None)
+    out = {}
+    for key, rx in MEMO_TAG_RE.items():
+        m = rx.search(text)
+        v = m.group(1).strip() if m else None
+        out[key] = v or None
+    return (out.get("cause_major"), out.get("cause_part"), out.get("cause_detail"))
+
+
+# ---------------------------------------------------------------------------
+# 原因詳細(自由記述)の「ざっくり分類」
+# ---------------------------------------------------------------------------
+# 原因詳細は「ハードディスクの不具合」「画面の左側の変色」のような自由記述で、
+# そのままでは1件ずつバラバラになり集計できない。また自由記述は公開ページに
+# 載せられないため、キーワードで決まった分類に振り分けて件数だけを集計する。
+# 上から順に判定し、最初に当たった分類を採用する(順序に意味がある)。
+CAUSE_DETAIL_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("電源が入らない・落ちる", ("電源", "起動", "立ち上が", "落ちる", "シャットダウン", "通電")),
+    ("画面・液晶の不具合", ("画面", "液晶", "ディスプレイ", "表示", "ちらつき", "焼け", "線が", "ドット", "ファインダー")),
+    ("レンズのカビ・クモリ", ("カビ", "クモリ", "くもり", "曇", "バルサム")),
+    ("異音がする", ("異音", "音がする", "ノイズ", "ガタツキ", "がたつき", "ガタ")),
+    ("音が出ない・音質不良", ("音が出", "音が鳴", "無音", "スピーカー", "ツイーター", "再生できない", "再生不可", "音質")),
+    ("液漏れ", ("液漏れ", "漏液")),
+    ("バッテリー・充電の不具合", ("バッテリー", "充電", "電池")),
+    ("接続・端子の不具合", ("端子", "ポート", "コネクタ", "接続", "認識しない", "通信", "Wi-Fi", "Bluetooth")),
+    ("割れ・折れ・変形・穴", ("割れ", "折れ", "欠け", "凹", "へこみ", "曲が", "歪", "捻", "反り", "変形",
+                             "破損", "剥が", "剥離", "穴", "亀裂", "ヒビ", "取れて")),
+    ("欠品・同梱漏れ", ("欠品", "欠落", "付属", "同梱", "不足", "入っていな", "届いていな", "紛失",
+                       "しか無", "しかなかった", "搭載されていな")),
+    ("傷・汚れ・変色", ("傷", "汚れ", "汚損", "ゴミ", "油", "サビ", "錆", "シミ", "染み", "臭",
+                       "黄変", "黄ば", "変色", "色あせ")),
+    ("記載・スペックの相違", ("記載", "型番", "表記", "誤り", "誤記", "違い", "相違", "誤回答",
+                             "タイトル", "スペック", "だった", "画像", "説明")),
+    ("海外版・仕様相違", ("海外版", "日本語", "並行輸入")),
+    ("改造・加工されていた", ("加工", "改造", "刺繍", "カスタム", "補修跡")),
+    ("アカウント・ロック未解除", ("未解除", "アクティベーション", "ロック", "SIM")),
+    ("梱包不備", ("梱包", "養生", "緩衝")),
+    ("配送・発送のミス", ("配送", "発送", "誤送", "伝票")),
+    # 否定形の言い回しは最後にまとめて拾う(物理破損や記載相違を先に判定させるため、
+    # 「しない」のような広いキーワードはこの位置に置く)
+    ("動作しない・機能不良", ("動作", "作動", "使用不可", "使えな", "機能", "不具合", "不良",
+                             "できない", "故障", "詰ま", "点灯", "絞り", "操作",
+                             "反応しな", "動かな", "回らな", "入らな", "流れない",
+                             "出力なし", "しない", "不可")),
+    ("お客様環境・主観によるもの", ("使用環境", "感じ方", "お客様の")),
+]
+
+CAUSE_DETAIL_OTHER = "その他・未分類"
+CAUSE_DETAIL_NONE = "(内容を読み取れず)"
+
+# 管理用メモに貼られる「お客様からの初回連絡内容」の見出し。表記ゆれがあるため複数に対応する。
+#   例: -------【以下初回内容】-------  /  ーー【初回お問い合わせ内容】ーー  /  【お客様：初回】
+FIRST_CONTACT_RE = re.compile(r"【[^】]*初回[^】]*】")
+
+
+def extract_first_contact(memo) -> Optional[str]:
+    """管理用メモから「お客様の初回連絡内容」の本文を取り出す。
+
+    原因詳細が書かれていない案件でも、初回連絡の文面からどんなSRだったかは読み取れる。
+    ただしこの本文には口座名義などの個人情報が含まれるため、呼び出し側では
+    classify_cause_detail に渡して「分類名」に変換した結果だけを使い、本文は保持しない。
+    """
+    if memo is None or (isinstance(memo, float) and pd.isna(memo)):
+        return None
+    text = str(memo)
+    m = FIRST_CONTACT_RE.search(text)
+    if not m:
+        return None
+    body = text[m.end():].strip(" -─―ー=\r\n\t")
+    return body or None
+
+
+def _match_detail_rules(text: str) -> Optional[str]:
+    for label, keywords in CAUSE_DETAIL_RULES:
+        for kw in keywords:
+            if kw in text:
+                return label
+    return None
+
+
+def classify_cause_detail(detail) -> str:
+    """原因詳細(自由記述)を、あらかじめ決めた分類名に振り分ける。"""
+    if detail is None or (isinstance(detail, float) and pd.isna(detail)):
+        return CAUSE_DETAIL_NONE
+    text = str(detail).strip()
+    if not text or text.lower() == "nan":
+        return CAUSE_DETAIL_NONE
+    return _match_detail_rules(text) or CAUSE_DETAIL_OTHER
+
+
+def classify_cause_detail_with_source(detail, memo) -> tuple[str, str]:
+    """(分類名, どこから読み取ったか) を返す。
+
+    1. 【原因詳細】の記載があればそれを使う
+    2. 無ければ管理用メモの「初回連絡内容」の本文から読み取る
+    3. どちらも無い/判定できない場合は「(内容を読み取れず)」
+
+    どちらの文章も自由記述なので、返すのは分類名と出所だけ。本文は保持しない。
+    """
+    if detail is not None and not (isinstance(detail, float) and pd.isna(detail)):
+        text = str(detail).strip()
+        if text and text.lower() != "nan":
+            return (_match_detail_rules(text) or CAUSE_DETAIL_OTHER, "原因詳細")
+    body = extract_first_contact(memo)
+    if body:
+        hit = _match_detail_rules(body)
+        if hit:
+            return (hit, "初回連絡")
+        return (CAUSE_DETAIL_OTHER, "初回連絡")
+    return (CAUSE_DETAIL_NONE, "記載なし")
+
+
 def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFrame:
     """「分類」列(CS_登録【分類用】)のうち種別=SRの行のみを対象に、大項目(動作/付属品/
     商品説明/欠品/配送/返金など)の内訳を week×拠点×カテゴリ×大項目 で集計する。
@@ -889,7 +1158,10 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     """
     frames = []
     for w in weeks:
-        raw = w.files.get("cs_bunruiyou")
+        # 【分類用】ファイルが無い週でも、通常のCS_登録に「分類」列(SR > 大項目 > 小項目)が
+        # 入っているのでそちらから読む。2026年8月に運用が「返金メモへの原因記載」へ切り替わり
+        # 【分類用】ファイルが作られなくなったため、通常版へのフォールバックが必須になった。
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
         if raw is None:
             continue
         df = read_csv_bytes(raw)
@@ -910,7 +1182,7 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     stats.through_rows += int(through_mask.sum())
     all_df = all_df[~through_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
 
     # 種別=SR の行のみを対象とする(CS種別はSR分類の内訳に含めない)
@@ -919,12 +1191,57 @@ def aggregate_sr_major(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.Data
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
     all_df["major"] = all_df["分類"].map(extract_major_category)
+    all_df["minor"] = all_df["分類"].map(extract_minor_category).fillna("(小項目なし)")
     all_df = all_df[all_df["major"].notna()].copy()
 
     grouped = (
-        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category", "major"])
+        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category", "major", "minor"])
         .size()
         .reset_index(name="count")
+        .rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
+    )
+    return grouped
+
+
+def aggregate_cause_from_refund(weeks: list[WeekFiles]) -> pd.DataFrame:
+    """CS_返金の「管理用メモ」に記載された原因(原因分類・原因元)を集計する。
+
+    運用変更(2026年8月〜)により、返金確定時に管理用メモの先頭へ
+    【原因元】【原因分類】【原因詳細】を記載する運用になったため、こちらを主データとする。
+    返金額・返送料も同時に集計し、「どの不備がいくらの損失になっているか」を金額で見られるようにする。
+    メモに記載が無い週・行は対象外(この関数は0行を返し、呼び出し側が分類用ファイルで補う)。
+    """
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "管理用メモ" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "返金日"))
+    cols = ["week_start", "week_end", "year_month", "location", "category",
+            "cause_major", "cause_part", "count", "refund_amount"]
+    if not frames:
+        return pd.DataFrame(columns=cols)
+
+    all_df = concat_and_dedup(frames, id_col="CS ID")
+    all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+    all_df = all_df[to_datetime_any(all_df["返金日"]).notna()].copy()
+    parsed = all_df["管理用メモ"].map(parse_memo_cause)
+    all_df["cause_major"] = parsed.map(lambda t: t[0])
+    all_df["cause_part"] = parsed.map(lambda t: t[1]).fillna("(不明)")
+    all_df = all_df[all_df["cause_major"].notna()].copy()
+    if all_df.empty:
+        return pd.DataFrame(columns=cols)
+    all_df["location"] = all_df["拠点"].fillna("(不明)")
+    all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
+    all_df["_amt"] = to_excl_tax(to_numeric(all_df["返金額"]))
+    grouped = (
+        all_df.groupby(["_week_start", "_week_end", "_year_month", "location", "category",
+                        "cause_major", "cause_part"])
+        .agg(count=("_amt", "size"), refund_amount=("_amt", "sum"))
+        .reset_index()
         .rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
     )
     return grouped
@@ -957,7 +1274,7 @@ def aggregate_cause(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFra
     stats.through_rows += int(through_mask.sum())
     all_df = all_df[~through_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
@@ -999,7 +1316,7 @@ def aggregate_refund(
     stats.henkin_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["返金日"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["返金日"]).notna()
     skipped_no_date = int((~valid_date).sum())
     if skipped_no_date:
         print(f"[警告] CS_返金: 返金日が空/不正のため集計対象外とした行数 = {skipped_no_date}")
@@ -1007,17 +1324,19 @@ def aggregate_refund(
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
-    all_df["返金額_num"] = to_numeric(all_df["返金額"])
+    # 返金額は税込で記録されているため税抜に換算して保持する(表示・率とも税抜で統一)
+    all_df["返金額_num"] = to_excl_tax(to_numeric(all_df["返金額"]))
 
     # 返品欄が「あり」の場合、返送料(ヤフオク配送料そのもの。÷1.1しない)も最終利益から差し引く
     all_df["_norm_id"] = all_df["商品ID"].map(normalize_product_id)
     is_return = all_df["返品"].fillna("").astype(str).str.strip() == "あり"
 
     def _shipping_fee(norm_id):
+        # 返送料(ヤフオク配送料)も税込のため税抜に換算する
         if norm_id is None:
             return 0.0
         info = cost_master.get(norm_id)
-        return info[1] if info else 0.0
+        return to_excl_tax(info[1]) if info else 0.0
 
     all_df["返送料_num"] = 0.0
     all_df.loc[is_return, "返送料_num"] = all_df.loc[is_return, "_norm_id"].map(_shipping_fee)
@@ -1105,7 +1424,7 @@ def aggregate_question(
     stats.shitsumon_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["登録"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["登録"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["category"].fillna("不明")
@@ -1170,7 +1489,7 @@ def aggregate_shipped_and_sales(
     merged = merged[~excluded_mask].copy()
 
     # 出荷予定日が有効な行のみを対象とする(基準日そのものは週フォルダの範囲を採用)
-    valid_date = pd.to_datetime(merged["出荷予定日"], errors="coerce").notna()
+    valid_date = to_datetime_any(merged["出荷予定日"]).notna()
     merged = merged[valid_date].copy()
 
     merged["location"] = merged["拠点"].fillna("(不明)")
@@ -1221,7 +1540,7 @@ def aggregate_listed(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFr
     stats.shuppinmachi_rows += int(excluded_mask.sum())
     all_df = all_df[~excluded_mask].copy()
 
-    valid_date = pd.to_datetime(all_df["出品待"], errors="coerce").notna()
+    valid_date = to_datetime_any(all_df["出品待"]).notna()
     all_df = all_df[valid_date].copy()
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
@@ -1277,6 +1596,8 @@ SHUKKA_DETAIL_COLUMNS = [
     "expected_profit", "actual_profit", "variance",
     # 以下、種別(仕入れ方法)・送料・リードタイム分析用に追加した列
     "procurement_type", "shipping_fee", "lead_days", "norm_product_id",
+    # ⑦赤字ページの商品明細ドリルダウン用(買取担当者・商品ID)
+    "buyer",
 ]
 
 
@@ -1319,12 +1640,15 @@ def build_shukka_detail(
 
     all_df["location"] = all_df["拠点"].fillna("(不明)")
     all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
-    all_df["condition"] = all_df["状態"].fillna("不明").replace("", "不明")
+    all_df["condition"] = all_df["状態"].map(normalize_condition)
     all_df["落札価格_num"] = to_numeric(all_df["落札価格"])
     all_df["販売価格_num"] = to_numeric(all_df["販売価格"])
     all_df["買取価格_num"] = to_numeric(all_df["買取価格"])
-    all_df["expected_profit"] = all_df["販売価格_num"] - all_df["買取価格_num"] / 1.1
-    all_df["actual_profit"] = all_df["落札価格_num"] - all_df["買取価格_num"] / 1.1
+    # 税抜で統一する: 販売価格・買取価格は税込のため÷1.1、落札価格は税抜なのでそのまま。
+    all_df["販売価格_税抜"] = to_excl_tax(all_df["販売価格_num"])
+    all_df["買取価格_税抜"] = to_excl_tax(all_df["買取価格_num"])
+    all_df["expected_profit"] = all_df["販売価格_税抜"] - all_df["買取価格_税抜"]
+    all_df["actual_profit"] = all_df["落札価格_num"] - all_df["買取価格_税抜"]
     all_df["variance"] = all_df["actual_profit"] - all_df["expected_profit"]
     bands = all_df["落札価格_num"].map(price_band_of)
     all_df["price_band"] = bands.map(lambda t: t[0])
@@ -1340,7 +1664,7 @@ def build_shukka_detail(
     ship_date_master = ship_date_master or {}
     ymd = all_df["norm_product_id"].map(lambda nid: ship_date_master.get(nid) if nid else None)
     ymd = pd.Series(ymd, index=all_df.index)
-    fb_win = pd.to_datetime(all_df["落札"], errors="coerce").dt.strftime("%Y-%m-%d")
+    fb_win = to_datetime_any(all_df["落札"]).dt.strftime("%Y-%m-%d")
     ymd = ymd.fillna(fb_win).fillna(all_df["_week_end"])
     all_df["_week_start"] = ymd
     all_df["_week_end"] = ymd
@@ -1363,20 +1687,205 @@ def build_shukka_detail(
             lambda nid: shipping_fee_master.get(nid, 0.0) if nid else 0.0
         )
         all_df.loc[is_rakuraku, "shipping_fee"] = looked_up
+    # ヤフオク配送料・受注_通常_出荷の送料はいずれも税込なので税抜に換算する
+    all_df["shipping_fee"] = to_excl_tax(all_df["shipping_fee"])
 
     # リードタイム = 落札日 - 買取日(日数)。いずれかが不正な日付の場合はNaN。
-    buy_dt = pd.to_datetime(all_df["買取"], errors="coerce")
-    win_dt = pd.to_datetime(all_df["落札"], errors="coerce")
+    buy_dt = to_datetime_any(all_df["買取"])
+    win_dt = to_datetime_any(all_df["落札"])
     all_df["lead_days"] = (win_dt - buy_dt).dt.days
+
+    # ⑦赤字ページの商品明細で「誰が買い取った商品か」を出すための担当者名。
+    # 列が無い週でも落ちないようにフォールバックする。
+    if "買取ユーザー" in all_df.columns:
+        all_df["buyer"] = all_df["買取ユーザー"].fillna("(不明)").astype(str).str.strip().replace("", "(不明)")
+    else:
+        all_df["buyer"] = "(不明)"
 
     return all_df[
         [
             "_week_start", "_week_end", "_year_month", "location", "category", "condition",
             "price_band", "price_band_sort", "落札価格_num", "販売価格_num", "買取価格_num",
             "expected_profit", "actual_profit", "variance",
-            "procurement_type", "shipping_fee", "lead_days", "norm_product_id",
+            "procurement_type", "shipping_fee", "lead_days", "norm_product_id", "buyer",
         ]
     ].rename(columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"})
+
+
+def build_product_attr_master(weeks: list[WeekFiles]) -> dict[str, tuple[str, str, int]]:
+    """商品ID(数字部分) -> (状態, 価格帯ラベル, 価格帯ソート値) のマスタを作成する。
+
+    コンディション別・価格帯別のページで、SR/問合せ/返金/質問といった
+    「商品_出荷(JPONベース)には無いデータ」を状態・価格帯に紐づけるために使う。
+    CS_登録・CS_返金・質問_登録はいずれも商品ID列を持つので、このマスタに突合して
+    状態と価格帯を後付けする。
+
+    価格の基準は「落札価格」(売れた実績価格)を優先し、未売却などで落札価格が無い場合は
+    「販売価格」(出品価格)にフォールバックする。どちらも無い場合は価格帯「不明」。
+    商品_出荷(JPONベース)・商品_出品待の両方から集め、同一IDは最初に現れたものを採用する
+    (build_product_status_master 等と同じ方針)。
+    """
+    frames = []
+    for w in weeks:
+        for key in ("shohin_shukka", "shohin_shuppinmachi"):
+            raw = w.files.get(key)
+            if raw is None:
+                continue
+            df = read_csv_bytes(raw)
+            if "商品ID" not in df.columns or "状態" not in df.columns:
+                continue
+            cols = ["商品ID", "状態"]
+            for c in ("落札価格", "販売価格"):
+                if c in df.columns:
+                    cols.append(c)
+            sub = df[cols].copy()
+            if "落札価格" not in sub.columns:
+                sub["落札価格"] = None
+            if "販売価格" not in sub.columns:
+                sub["販売価格"] = None
+            sub["_norm_id"] = sub["商品ID"].map(normalize_product_id)
+            frames.append(sub[["_norm_id", "状態", "落札価格", "販売価格"]])
+    if not frames:
+        return {}
+    all_df = pd.concat(frames, ignore_index=True).dropna(subset=["_norm_id"])
+    all_df = all_df.drop_duplicates(subset=["_norm_id"], keep="first")
+    win = to_numeric(all_df["落札価格"])
+    sell = to_numeric(all_df["販売価格"])
+    price = win.where(win > 0, sell)
+    bands = price.map(lambda v: price_band_of(v) if v and v > 0 else ("不明", -1))
+    cond = all_df["状態"].map(normalize_condition)
+    return dict(
+        zip(
+            all_df["_norm_id"].tolist(),
+            zip(cond.tolist(), bands.map(lambda t: t[0]).tolist(), bands.map(lambda t: t[1]).tolist()),
+        )
+    )
+
+
+UNKNOWN_ATTR = ("不明", "不明", -1)
+
+
+def _attach_attrs(df: pd.DataFrame, attr_master: dict[str, tuple[str, str, int]]) -> pd.DataFrame:
+    """商品ID列から状態・価格帯を付与する。マスタに無い商品は「不明」に集約する。"""
+    df = df.copy()
+    norm = df["商品ID"].map(normalize_product_id) if "商品ID" in df.columns else pd.Series([None] * len(df), index=df.index)
+    attrs = norm.map(lambda nid: attr_master.get(nid, UNKNOWN_ATTR) if nid else UNKNOWN_ATTR)
+    df["condition"] = attrs.map(lambda t: normalize_condition(t[0]))
+    df["price_band"] = attrs.map(lambda t: t[1])
+    df["price_band_sort"] = attrs.map(lambda t: t[2])
+    return df
+
+
+def aggregate_condition_price_metrics(
+    weeks: list[WeekFiles], attr_master: dict[str, tuple[str, str, int]]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """コンディション別・価格帯別の 問合せ/SR/返金/質問/出品 を日次集計する。
+
+    ①〜④ページと同じ定義・同じ基準日を使い、切り口(状態・価格帯)だけを追加したもの:
+      - 問合せ(種別=CS、案件名フィルタあり)・SR(種別=SR) : CS_登録の「登録」日
+      - 返金額・返金件数                                   : CS_返金の「返金日」
+      - 質問数                                             : 質問_登録の「登録」日
+      - 出品数                                             : 商品_出品待の「出品待」日
+    出品数のみ、商品_出品待ファイル自身が状態・販売価格を持つのでマスタ突合は不要。
+    戻り値: (コンディション別DataFrame, 価格帯別DataFrame)
+    """
+    base = ["_week_start", "_week_end", "_year_month", "location", "category"]
+    cond_parts, band_parts = [], []
+
+    def _push(df: pd.DataFrame, value_cols: dict):
+        for keys, parts in ((["condition"], cond_parts), (["price_band", "price_band_sort"], band_parts)):
+            g = df.groupby(base + keys, dropna=False).agg(**value_cols).reset_index()
+            parts.append(g)
+
+    # --- CS_登録: 問合せ・SR ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
+        if raw is not None:
+            frames.append(tag_by_date(read_csv_bytes(raw), w, "登録"))
+    if frames:
+        df = concat_and_dedup(frames, id_col="CS ID")
+        df = df[~df["拠点"].map(is_excluded_location)]
+        df = df[df["ステータス"].fillna("").astype(str).str.strip() != "スルー"]
+        df = df[to_datetime_any(df["登録"]).notna()].copy()
+        df["location"] = df["拠点"].fillna("(不明)")
+        df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
+        df = _attach_attrs(df, attr_master)
+        shubetsu = df["種別"].fillna("").astype(str).str.strip()
+        df["_sr"] = (shubetsu == "SR").astype(int)
+        df["_cs"] = ((shubetsu == "CS") & _matches_inquiry_name_filter(df["商品名・案件名"])).astype(int)
+        _push(df, {"sr_count": ("_sr", "sum"), "inquiry_count": ("_cs", "sum")})
+
+    # --- CS_返金: 返金件数・返金額 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is not None:
+            frames.append(tag_by_date(read_csv_bytes(raw), w, "返金日"))
+    if frames:
+        df = concat_and_dedup(frames, id_col="CS ID")
+        df = df[~df["拠点"].map(is_excluded_location)]
+        df = df[to_datetime_any(df["返金日"]).notna()].copy()
+        df["location"] = df["拠点"].fillna("(不明)")
+        df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
+        df = _attach_attrs(df, attr_master)
+        df["_amt"] = to_numeric(df["返金額"])
+        df["_one"] = 1
+        _push(df, {"refund_count": ("_one", "sum"), "refund_amount": ("_amt", "sum")})
+
+    # --- 質問_登録: 質問数 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("shitsumon_bunruiyou") or w.files.get("shitsumon")
+        if raw is not None:
+            frames.append(tag_by_date(read_csv_bytes(raw), w, "登録"))
+    if frames:
+        df = concat_and_dedup(frames, id_col="質問ID")
+        df = df[~df["拠点"].map(is_excluded_location)]
+        df = df[to_datetime_any(df["登録"]).notna()].copy()
+        df["location"] = df["拠点"].fillna("(不明)")
+        df = _attach_attrs(df, attr_master)
+        if "カテゴリ" in df.columns:
+            df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
+        else:
+            df["category"] = "不明"
+        df["_one"] = 1
+        _push(df, {"question_count": ("_one", "sum")})
+
+    # --- 商品_出品待: 出品数(ファイル自身が状態・販売価格を持つ) ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("shohin_shuppinmachi")
+        if raw is not None:
+            frames.append(tag_by_date(read_csv_bytes(raw), w, "出品待"))
+    if frames:
+        df = concat_and_dedup(frames, id_col="商品ID")
+        df = df[~df["拠点"].map(is_excluded_location)]
+        df = df[to_datetime_any(df["出品待"]).notna()].copy()
+        df["location"] = df["拠点"].fillna("(不明)")
+        df["category"] = df["カテゴリ"].fillna("不明").replace("", "不明")
+        df["condition"] = df["状態"].map(normalize_condition)
+        price = to_numeric(df["落札価格"]).where(to_numeric(df["落札価格"]) > 0, to_numeric(df["販売価格"]))
+        bands = price.map(lambda v: price_band_of(v) if v and v > 0 else ("不明", -1))
+        df["price_band"] = bands.map(lambda t: t[0])
+        df["price_band_sort"] = bands.map(lambda t: t[1])
+        df["_one"] = 1
+        _push(df, {"listed_count": ("_one", "sum")})
+
+    def _merge(parts, keys):
+        if not parts:
+            return pd.DataFrame(columns=base + keys)
+        out = parts[0]
+        for x in parts[1:]:
+            out = out.merge(x, on=base + keys, how="outer")
+        for c in out.columns:
+            if c not in base + keys:
+                out[c] = out[c].fillna(0)
+        return out.rename(
+            columns={"_week_start": "week_start", "_week_end": "week_end", "_year_month": "year_month"}
+        )
+
+    return _merge(cond_parts, ["condition"]), _merge(band_parts, ["price_band", "price_band_sort"])
 
 
 def aggregate_condition(detail: pd.DataFrame) -> pd.DataFrame:
@@ -1435,6 +1944,66 @@ def aggregate_profit_variance(detail: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     return grouped
+
+
+def aggregate_variance_breakdown(detail: pd.DataFrame, dim: str) -> pd.DataFrame:
+    """粗利差異を「コンディション別」「価格帯別」に分解する(⑥粗利差異ページ用)。
+
+    上振れ(見込みより高く売れた)と下振れ(安く売れた)を分けて件数・金額を持たせ、
+    どの状態・価格帯で値付けが外れているかを特定できるようにする。
+    dim には "condition" または "price_band" を指定する。
+    """
+    base = ["week_start", "week_end", "year_month", "location", "category"]
+    keys = base + ([dim, "price_band_sort"] if dim == "price_band" else [dim])
+    cols = keys + ["count", "expected_profit_sum", "actual_profit_sum", "variance_sum",
+                   "upside_count", "upside_amount", "downside_count", "downside_amount"]
+    if detail.empty or dim not in detail.columns:
+        return pd.DataFrame(columns=cols)
+    d = detail.copy()
+    d["is_upside"] = d["variance"] > 0
+    d["is_downside"] = d["variance"] < 0
+    d["upside_amount"] = d["variance"].where(d["is_upside"], 0.0)
+    d["downside_amount"] = d["variance"].where(d["is_downside"], 0.0)
+    grouped = (
+        d.groupby(keys)
+        .agg(
+            count=("variance", "size"),
+            expected_profit_sum=("expected_profit", "sum"),
+            actual_profit_sum=("actual_profit", "sum"),
+            variance_sum=("variance", "sum"),
+            upside_count=("is_upside", "sum"),
+            upside_amount=("upside_amount", "sum"),
+            downside_count=("is_downside", "sum"),
+            downside_amount=("downside_amount", "sum"),
+        )
+        .reset_index()
+    )
+    return grouped[cols]
+
+
+def build_variance_breakdown_rows(detail: pd.DataFrame, dim: str) -> list[dict]:
+    df = aggregate_variance_breakdown(detail, dim)
+    if df.empty:
+        return []
+    out = []
+    for _, r in df.iterrows():
+        rec = {
+            "week_start": r["week_start"], "week_end": r["week_end"], "year_month": r["year_month"],
+            "location": r["location"], "category": r["category"],
+            "count": int(r["count"]),
+            "expected_profit_sum": _safe_float(r["expected_profit_sum"]),
+            "actual_profit_sum": _safe_float(r["actual_profit_sum"]),
+            "variance_sum": _safe_float(r["variance_sum"]),
+            "upside_count": int(r["upside_count"]), "upside_amount": _safe_float(r["upside_amount"]),
+            "downside_count": int(r["downside_count"]), "downside_amount": _safe_float(r["downside_amount"]),
+        }
+        if dim == "price_band":
+            rec["price_band"] = r["price_band"]
+            rec["price_band_sort"] = int(r["price_band_sort"])
+        else:
+            rec["condition"] = r["condition"]
+        out.append(rec)
+    return out
 
 
 CATEGORY_PROFIT_DETAIL_COLUMNS = [
@@ -1574,7 +2143,7 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
     df = aggregate_sr_major(weeks, stats)
     if df.empty:
         return []
-    df = df.sort_values(["week_start", "location", "category", "major"])
+    df = df.sort_values(["week_start", "location", "category", "major", "minor"])
     return [
         {
             "week_start": r["week_start"],
@@ -1583,18 +2152,171 @@ def build_sr_major_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[d
             "location": r["location"],
             "category": r["category"],
             "major": r["major"],
+            "minor": r.get("minor", "(小項目なし)"),
             "count": int(r["count"]),
         }
         for _, r in df.iterrows()
     ]
 
 
-def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
-    df = aggregate_cause(weeks, stats)
-    if df.empty:
+def _cause_records(weeks: list[WeekFiles], stats: ExclusionStats) -> pd.DataFrame:
+    """原因が分かるレコードを、1行=1案件(CS ID)の形で集める。
+
+    出所は3つあり、同じCS IDについては次の優先順で1件だけ採用する。
+      1. CS_返金の「管理用メモ」の【原因元】【原因分類】(現行運用。返金額も分かる)
+      2. CS_登録(【分類用】が無ければ通常版)の「管理用メモ」の【原因】記載
+      3. CS_登録【分類用】の「原因分類」「原因元」列(運用変更前に手作業で分類したもの)
+
+    2026年8月に運用が「返金確定時に管理用メモへ原因を記載する」方式へ切り替わり、
+    【分類用】ファイルが作られなくなった。以前は「週単位」でどちらの出所を使うかを
+    決めていたため、切り替え期の週で片方のデータが丸ごと捨てられていた。
+    案件単位で優先順を判定することで、記載がある案件は新運用、記載がない案件は
+    旧ファイル、という混在期でも取りこぼさずに集計できる。
+    """
+    cols = ["cs_id", "week_start", "week_end", "year_month", "location", "category",
+            "cause_major", "cause_part", "detail_group", "detail_source", "refund_amount", "source"]
+
+    def _prep(df: pd.DataFrame, date_col: str, w: WeekFiles) -> pd.DataFrame:
+        d = tag_by_date(df, w, date_col)
+        d = d[~d["拠点"].map(is_excluded_location)].copy()
+        if "ステータス" in d.columns:
+            through = d["ステータス"].fillna("").astype(str).str.strip() == "スルー"
+            stats.through_rows += int(through.sum())
+            d = d[~through].copy()
+        d = d[to_datetime_any(d[date_col]).notna()].copy()
+        # 原因分析はSRを対象にする(種別=CSの商品質問などは別体系のため除く)
+        if "種別" in d.columns:
+            d = d[d["種別"].fillna("").astype(str).str.strip() == "SR"].copy()
+        return d
+
+    def _finish(d: pd.DataFrame, source: str, with_amount: bool) -> pd.DataFrame:
+        if d.empty:
+            return pd.DataFrame(columns=cols)
+        _memo = d["管理用メモ"] if "管理用メモ" in d.columns else pd.Series([None] * len(d), index=d.index)
+        _dg = pd.Series(
+            [classify_cause_detail_with_source(cd, mm) for cd, mm in zip(d["cause_detail"], _memo)],
+            index=d.index,
+        )
+        out = pd.DataFrame({
+            "cs_id": d["CS ID"].astype(str).str.strip(),
+            "week_start": d["_week_start"],
+            "week_end": d["_week_end"],
+            "year_month": d["_year_month"],
+            "location": d["拠点"].fillna("(不明)"),
+            "category": d["カテゴリ"].fillna("不明").replace("", "不明"),
+            "cause_major": d["cause_major"],
+            "cause_part": d["cause_part"].fillna("(不明)").replace("", "(不明)"),
+            "detail_group": _dg.map(lambda t: t[0]),
+            "detail_source": _dg.map(lambda t: t[1]),
+            "refund_amount": (to_excl_tax(to_numeric(d["返金額"])).fillna(0.0)
+                              if (with_amount and "返金額" in d.columns) else 0.0),
+            "source": source,
+        })
+        return out[out["cause_major"].notna() & (out["cause_major"].astype(str).str.strip() != "")]
+
+    # --- 1) CS_返金の管理用メモ ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "管理用メモ" not in df.columns:
+            continue
+        frames.append(_prep(df, "返金日", w))
+    memo_refund = pd.DataFrame(columns=cols)
+    if frames:
+        d = concat_and_dedup(frames, id_col="CS ID")
+        parsed = d["管理用メモ"].map(parse_memo_cause3)
+        d["cause_major"] = parsed.map(lambda t: t[0])
+        d["cause_part"] = parsed.map(lambda t: t[1])
+        d["cause_detail"] = parsed.map(lambda t: t[2])
+        memo_refund = _finish(d, "返金メモ", True)
+
+    # --- 2) CS_登録の管理用メモ / 3) CS_登録【分類用】の原因列 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
+        if raw is None:
+            continue
+        frames.append(_prep(read_csv_bytes(raw), "登録", w))
+    memo_touroku = pd.DataFrame(columns=cols)
+    file_cause = pd.DataFrame(columns=cols)
+    if frames:
+        d = concat_and_dedup(frames, id_col="CS ID")
+        if "管理用メモ" in d.columns:
+            parsed = d["管理用メモ"].map(parse_memo_cause3)
+            dm = d.copy()
+            dm["cause_major"] = parsed.map(lambda t: t[0])
+            dm["cause_part"] = parsed.map(lambda t: t[1])
+            dm["cause_detail"] = parsed.map(lambda t: t[2])
+            memo_touroku = _finish(dm, "登録メモ", False)
+        if all(c in d.columns for c in ("原因分類", "原因元")):
+            df2 = d.copy()
+            df2["cause_major"] = df2["原因分類"].astype(str).str.strip().replace({"nan": None, "": None})
+            df2["cause_part"] = df2["原因元"].astype(str).str.strip().replace({"nan": None, "": None})
+            df2["cause_detail"] = (df2["原因詳細"] if "原因詳細" in df2.columns else None)
+            file_cause = _finish(df2, "分類用ファイル", False)
+
+    merged = pd.concat([memo_refund, memo_touroku, file_cause], ignore_index=True)
+    if merged.empty:
+        return pd.DataFrame(columns=cols)
+    # 同じ案件は優先順の高い出所(=先に連結したもの)だけ残す
+    merged = merged[merged["cs_id"].astype(str).str.strip() != ""]
+    merged = merged.drop_duplicates(subset=["cs_id"], keep="first")
+    return merged
+
+
+def build_cause_detail_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
+    """原因分類ごとに「原因詳細をざっくり分類した内容」の内訳を作る。
+
+    「動作不備と書かれているが、具体的には何が起きているのか」を追えるようにするための
+    データ。原因詳細の自由記述そのものは持たず、classify_cause_detail で決まった
+    分類名に置き換えた件数・返金額だけを保持する(公開ページに載せるため)。
+    """
+    rec = _cause_records(weeks, stats)
+    if rec.empty:
         return []
-    df = df.sort_values(["week_start", "location", "category", "cause_major", "cause_part"])
-    return [
+    grouped = (
+        rec.groupby(["week_start", "week_end", "year_month", "location", "category",
+                     "cause_major", "detail_group", "detail_source"])
+        .agg(count=("cs_id", "size"), refund_amount=("refund_amount", "sum"))
+        .reset_index()
+    )
+    out = [
+        {
+            "week_start": r["week_start"],
+            "week_end": r["week_end"],
+            "year_month": r["year_month"],
+            "location": r["location"],
+            "category": r["category"],
+            "cause_major": r["cause_major"],
+            "detail_group": r["detail_group"],
+            "detail_source": r["detail_source"],
+            "count": int(r["count"]),
+            "refund_amount": _safe_float(r["refund_amount"]) or 0.0,
+        }
+        for _, r in grouped.iterrows()
+    ]
+    out.sort(key=lambda r: (r["week_start"], r["cause_major"], -r["count"]))
+    return out
+
+
+def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict]:
+    """原因(原因分類×原因元)の行を、案件(CS ID)単位の優先順で作る。
+
+    優先順は _cause_records を参照。どの出所を採用したかは source 列で分かる。
+    """
+    rec = _cause_records(weeks, stats)
+    if rec.empty:
+        return []
+    grouped = (
+        rec.groupby(["week_start", "week_end", "year_month", "location", "category",
+                     "cause_major", "cause_part", "source"])
+        .agg(count=("cs_id", "size"), refund_amount=("refund_amount", "sum"))
+        .reset_index()
+    )
+    out = [
         {
             "week_start": r["week_start"],
             "week_end": r["week_end"],
@@ -1604,13 +2326,45 @@ def build_cause_rows(weeks: list[WeekFiles], stats: ExclusionStats) -> list[dict
             "cause_major": r["cause_major"],
             "cause_part": r["cause_part"],
             "count": int(r["count"]),
+            "refund_amount": _safe_float(r["refund_amount"]) or 0.0,
+            "source": r["source"],
         }
-        for _, r in df.iterrows()
+        for _, r in grouped.iterrows()
     ]
+    out.sort(key=lambda r: (r["week_start"], r["location"], r["category"], r["cause_major"]))
+    return out
 
 
-def build_condition_rows(detail: pd.DataFrame) -> list[dict]:
-    df = aggregate_condition(detail)
+EXTRA_METRIC_COLS = [
+    "inquiry_count", "sr_count", "refund_count", "refund_amount", "question_count", "listed_count",
+]
+
+
+def _merge_extra_metrics(df: pd.DataFrame, extra: Optional[pd.DataFrame], keys: list[str]) -> pd.DataFrame:
+    """出荷ベースの集計(df)に、コンディション別・価格帯別の新指標(extra)を外部結合する。
+
+    出荷が0でもSR・返金・質問・出品だけが存在する組み合わせ(例: まだ売れていない出品)も
+    行として残す必要があるため how="outer" で結合し、欠損は0で埋める。
+    """
+    base = ["week_start", "week_end", "year_month", "location", "category"]
+    if extra is None or extra.empty:
+        out = df.copy()
+        for c in EXTRA_METRIC_COLS:
+            out[c] = 0
+        return out
+    out = df.merge(extra, on=base + keys, how="outer")
+    for c in EXTRA_METRIC_COLS:
+        if c not in out.columns:
+            out[c] = 0
+    fill = {c: 0 for c in out.columns if c not in base + keys}
+    out = out.fillna(value=fill)
+    if "price_band" in keys and "price_band_sort" in out.columns:
+        out["price_band_sort"] = out["price_band_sort"].astype(int)
+    return out
+
+
+def build_condition_rows(detail: pd.DataFrame, extra: Optional[pd.DataFrame] = None) -> list[dict]:
+    df = _merge_extra_metrics(aggregate_condition(detail), extra, ["condition"])
     if df.empty:
         return []
     df = df.sort_values(["week_start", "location", "category", "condition"])
@@ -1623,15 +2377,17 @@ def build_condition_rows(detail: pd.DataFrame) -> list[dict]:
             "category": r["category"],
             "condition": r["condition"],
             "count": int(r["count"]),
+            "shipped_count": int(r["count"]),
             "sales_amount": float(r["sales_amount"]),
             "gross_profit": float(r["gross_profit"]),
+            **{c: (float(r[c]) if c.endswith("_amount") else int(r[c])) for c in EXTRA_METRIC_COLS},
         }
         for _, r in df.iterrows()
     ]
 
 
-def build_price_band_rows(detail: pd.DataFrame) -> list[dict]:
-    df = aggregate_price_band(detail)
+def build_price_band_rows(detail: pd.DataFrame, extra: Optional[pd.DataFrame] = None) -> list[dict]:
+    df = _merge_extra_metrics(aggregate_price_band(detail), extra, ["price_band", "price_band_sort"])
     if df.empty:
         return []
     df = df.sort_values(["week_start", "location", "category", "price_band_sort"])
@@ -1645,8 +2401,10 @@ def build_price_band_rows(detail: pd.DataFrame) -> list[dict]:
             "price_band": r["price_band"],
             "price_band_sort": int(r["price_band_sort"]),
             "count": int(r["count"]),
+            "shipped_count": int(r["count"]),
             "sales_amount": float(r["sales_amount"]),
             "gross_profit": float(r["gross_profit"]),
+            **{c: (float(r[c]) if c.endswith("_amount") else int(r[c])) for c in EXTRA_METRIC_COLS},
         }
         for _, r in df.iterrows()
     ]
@@ -1681,7 +2439,8 @@ DEFICIT_COLUMNS = [
     # location は⑧赤字ページの拠点フィルタ用に追加した次元(build_shukka_detail が持つ
     # location をそのまま引き継ぐだけで、赤字判定・金額計算のロジックは一切変えていない)。
     "week_start", "week_end", "year_month", "location", "category", "procurement_type",
-    "count", "total_deficit", "avg_deficit_per_item", "shipping_fee_total", "return_shipping_total",
+    "count", "total_deficit", "avg_deficit_per_item", "shipping_fee_total",
+    "lost_shipping_total", "return_shipping_total", "returned_count",
 ]
 
 
@@ -1711,38 +2470,396 @@ def build_return_product_ids(weeks: list[WeekFiles]) -> set[str]:
     return set(ids.dropna())
 
 
-def aggregate_deficit(
+def aggregate_deficit_modes(
     weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
 ) -> pd.DataFrame:
-    """赤字(原価割れ)商品を週×カテゴリ×procurement_type(仕入れ方法)で集計する。
+    """⑦赤字ページ用に、2つの見方の損益を1商品ごとに算出する。
 
-    赤字の定義: 実質粗利(actual_profit - shipping_fee) が0未満の商品(発送送料も加味)。
-    加えて、その商品についてCS_返金に「返品」列が「あり」の行があれば、その商品の
-    返送料(cost_masterのヤフオク配送料)も追加で赤字額に加算する
-    (aggregate_refund の返送料ロジックを参考に、赤字商品側にも同じ基準で反映する)。
+    ① 粗利損        = 落札価格 - 買取価格/1.1
+         仕入と売価の差だけを見る、経理的な粗利。送料や返送料は含めない。
+    ② 最終利益      = 落札価格 - 買取価格/1.1
+                      - 返品ありなら (発送送料/1.1 + 返送料/1.1)
+         実際に手元に残る利益。送料の扱いは運用実態に合わせて次のとおり(2026-08 確認):
+           ・返品されなかった商品
+               お客様から受け取った送料をそのまま配送業者に支払うので損益ゼロ。
+               したがって発送送料は差し引かない。
+           ・返品された商品
+               受け取った送料はお客様に返金するが、配送業者への支払いは戻ってこない。
+               さらに返送料も当社負担になる。よって発送送料と返送料の両方が損失になる。
 
-    total_deficit は正の値=赤字の大きさとして統一する
-    (赤字方向の金額の絶対値 + 返品時の追加返送料)。
+    【返品→再出品→再販が同一期間内に起きた場合】
+      商品_出荷(JPONベース)は同じ商品IDが再出現するため concat_and_dedup で
+      「最後に現れた行(=再販時の落札価格)」を採用している。したがって落札価格は
+      自動的に最終的な販売価格になる。送料は「最終の発送1回分」のみを計上する。
+
+      例) 買取10,000円・最終落札13,000円・送料2,440円(税込)の場合
+          粗利損の判定 = 13,000 - 9,091 = 3,909円 (プラスなので粗利損ではない)
+          最終利益(返品なし) = 13,000 - 9,091 = 3,909円
+          最終利益(返品あり) = 13,000 - 9,091 - 2,218(発送送料税抜) - 返送料/1.1
     """
     if detail.empty:
-        return pd.DataFrame(columns=DEFICIT_COLUMNS)
-
+        return pd.DataFrame()
     d = detail.copy()
-    d["net_profit"] = d["actual_profit"] - d["shipping_fee"]
-    deficit = d[d["net_profit"] < 0].copy()
-    if deficit.empty:
-        return pd.DataFrame(columns=DEFICIT_COLUMNS)
-
     return_ids = build_return_product_ids(weeks)
 
     def _return_ship(norm_id):
         if not norm_id or norm_id not in return_ids:
             return 0.0
         info = cost_master.get(norm_id)
-        return info[1] if info else 0.0
+        return to_excl_tax(info[1]) if info else 0.0
 
-    deficit["return_shipping_amount"] = deficit["norm_product_id"].map(_return_ship)
-    deficit["deficit_amount"] = (-deficit["net_profit"]) + deficit["return_shipping_amount"]
+    d["return_shipping_amount"] = d["norm_product_id"].map(_return_ship)
+    # 返品された商品かどうか(発送送料を損失として扱うかの判定に使う)
+    d["is_returned"] = d["norm_product_id"].map(
+        lambda nid: bool(nid) and nid in return_ids
+    )
+    # 返品された商品だけ、発送送料も損失になる(お客様に返金するが配送業者への支払は戻らない)。
+    # shipping_fee は build_shukka_detail 時点で税抜換算済み。
+    d["lost_shipping_amount"] = d["shipping_fee"].where(d["is_returned"], 0.0)
+    # actual_profit は既に 落札価格 - 買取価格/1.1 (税抜)
+    d["accounting_profit"] = d["actual_profit"]
+    d["final_profit_item"] = (
+        d["actual_profit"] - d["lost_shipping_amount"] - d["return_shipping_amount"]
+    )
+    return d
+
+
+# ---------------------------------------------------------------------------
+# 雑損(返品されたが再販不可と判断され、商品V2で「雑損」ステータスになった商品)
+# ---------------------------------------------------------------------------
+# 雑損になると売上はゼロで買取価格がまるごと損失になるため、赤字商品とは別枠で
+# 件数・出荷比率・損失額(買取価格の税抜)を集計する。
+WRITEOFF_STATUS = "雑損"
+
+WRITEOFF_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "procurement_type",
+    "count", "loss_amount", "buy_price_total",
+]
+
+
+def build_writeoff_rows(
+    weeks: list[WeekFiles], ship_date_master: Optional[dict[str, str]] = None
+) -> list[dict]:
+    """進捗が「雑損」の商品を、日次×拠点×カテゴリ×仕入れ方法で集計する。
+
+    データ源は 商品_出荷(JPONベース) と 商品_出品待 の両方。同じ商品IDが複数週の
+    ファイルに現れるため concat_and_dedup で最後の行(=最新のステータス)を採用する。
+
+    損失額は買取価格(税込)を税抜に換算した額。再販できないため売上は立たず、
+    仕入に払った金額がそのまま損失になるという運用実態に合わせている。
+
+    期間キーは他ページと揃えるため出荷予定日(ship_date_master)を優先し、
+    引けない場合は「発送」→「落札」→週フォルダ終了日の順にフォールバックする。
+    """
+    frames = []
+    for w in weeks:
+        for key in ("shohin_shukka", "shohin_shuppinmachi"):
+            raw = w.files.get(key)
+            if raw is None:
+                continue
+            df = read_csv_bytes(raw)
+            if "進捗" not in df.columns or "商品ID" not in df.columns:
+                continue
+            sub = df[df["進捗"].fillna("").astype(str).str.strip() == WRITEOFF_STATUS]
+            if len(sub):
+                frames.append(tag_week(sub, w))
+    if not frames:
+        return []
+
+    all_df = concat_and_dedup(frames, id_col="商品ID")
+    all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+    if all_df.empty:
+        return []
+
+    all_df["location"] = all_df["拠点"].fillna("(不明)")
+    all_df["category"] = all_df["カテゴリ"].fillna("不明").replace("", "不明")
+    all_df["procurement_type"] = (
+        all_df["種別"].fillna("不明").astype(str).str.strip().replace("", "不明")
+        if "種別" in all_df.columns else "不明"
+    )
+    all_df["norm_product_id"] = all_df["商品ID"].map(normalize_product_id)
+    all_df["買取価格_num"] = to_numeric(all_df["買取価格"])
+    all_df["loss_amount"] = to_excl_tax(all_df["買取価格_num"])
+
+    ship_date_master = ship_date_master or {}
+    ymd = all_df["norm_product_id"].map(lambda nid: ship_date_master.get(nid) if nid else None)
+    ymd = pd.Series(ymd, index=all_df.index)
+    for col in ("発送", "落札"):
+        if col in all_df.columns:
+            ymd = ymd.fillna(to_datetime_any(all_df[col]).dt.strftime("%Y-%m-%d"))
+    ymd = ymd.fillna(all_df["_week_end"])
+    all_df["week_start"] = ymd
+    all_df["week_end"] = ymd
+    all_df["year_month"] = ymd.str.slice(0, 7)
+    all_df = all_df[all_df["week_start"].notna()].copy()
+    if all_df.empty:
+        return []
+
+    grouped = (
+        all_df.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
+        .agg(count=("loss_amount", "size"),
+             loss_amount=("loss_amount", "sum"),
+             buy_price_total=("買取価格_num", "sum"))
+        .reset_index()
+    )
+    return [
+        {
+            **{c: r[c] for c in ["week_start", "week_end", "year_month",
+                                 "location", "category", "procurement_type"]},
+            "count": int(r["count"]),
+            "loss_amount": _safe_float(r["loss_amount"]),
+            "buy_price_total": _safe_float(r["buy_price_total"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+
+
+DEFICIT_MODE_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "procurement_type",
+    "shipped_count",
+    "acc_deficit_count", "acc_deficit_amount", "acc_profit_sum",
+    "fin_deficit_count", "fin_deficit_amount", "fin_profit_sum",
+    "shipping_fee_total", "lost_shipping_total", "return_shipping_total",
+    "returned_count",
+]
+
+
+def build_deficit_mode_rows(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
+) -> list[dict]:
+    """「会計上の粗利」と「最終利益」の2軸で、赤字件数・赤字額・利益合計を集計する。"""
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return []
+    d["acc_is_deficit"] = d["accounting_profit"] < 0
+    d["fin_is_deficit"] = d["final_profit_item"] < 0
+    d["acc_deficit_amount"] = (-d["accounting_profit"]).where(d["acc_is_deficit"], 0.0)
+    d["fin_deficit_amount"] = (-d["final_profit_item"]).where(d["fin_is_deficit"], 0.0)
+    grouped = (
+        d.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
+        .agg(
+            shipped_count=("accounting_profit", "size"),
+            acc_deficit_count=("acc_is_deficit", "sum"),
+            acc_deficit_amount=("acc_deficit_amount", "sum"),
+            acc_profit_sum=("accounting_profit", "sum"),
+            fin_deficit_count=("fin_is_deficit", "sum"),
+            fin_deficit_amount=("fin_deficit_amount", "sum"),
+            fin_profit_sum=("final_profit_item", "sum"),
+            shipping_fee_total=("shipping_fee", "sum"),
+            lost_shipping_total=("lost_shipping_amount", "sum"),
+            return_shipping_total=("return_shipping_amount", "sum"),
+            returned_count=("is_returned", "sum"),
+        )
+        .reset_index()
+    )
+    return [
+        {
+            **{c: r[c] for c in ["week_start", "week_end", "year_month", "location", "category", "procurement_type"]},
+            "shipped_count": int(r["shipped_count"]),
+            "acc_deficit_count": int(r["acc_deficit_count"]),
+            "acc_deficit_amount": _safe_float(r["acc_deficit_amount"]),
+            "acc_profit_sum": _safe_float(r["acc_profit_sum"]),
+            "fin_deficit_count": int(r["fin_deficit_count"]),
+            "fin_deficit_amount": _safe_float(r["fin_deficit_amount"]),
+            "fin_profit_sum": _safe_float(r["fin_profit_sum"]),
+            "shipping_fee_total": _safe_float(r["shipping_fee_total"]),
+            "lost_shipping_total": _safe_float(r["lost_shipping_total"]),
+            "return_shipping_total": _safe_float(r["return_shipping_total"]),
+            "returned_count": int(r["returned_count"]),
+        }
+        for _, r in grouped.iterrows()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ⑦赤字ページ「カテゴリ別 詳細」クリック時に開く、商品1件ごとの明細
+# ---------------------------------------------------------------------------
+# 公開ページに載るため、商品名・SRの自由記述(原因詳細)・顧客情報は含めない。
+# 含めるのは金額と分類、および買取担当者名(社内の担当者別傾向を見るため)。
+
+ITEM_DETAIL_COLUMNS = [
+    "week_start", "week_end", "year_month", "location", "category", "condition",
+    "price_band", "price_band_sort", "procurement_type", "buyer", "product_id",
+    "buy_price", "expected_price", "sale_price",
+    "expected_profit", "actual_profit", "variance",
+    "lost_shipping", "return_shipping", "final_profit",
+    "sr_count", "sr_major", "sr_minor", "cause_major", "cause_part",
+    "refund_amount", "returned",
+]
+
+
+def build_item_sr_index(weeks: list[WeekFiles], stats: ExclusionStats) -> dict[str, dict]:
+    """商品ID(正規化キー) -> その商品で起きたSRの情報 の辞書を作る。
+
+    SRの判定・除外条件は aggregate_sr_major と揃える(種別=SR、ステータス=スルーは除外、
+    対象外拠点は除外)。1商品で複数のSRが立つことがあるため件数を数え、分類は最初に
+    現れたものを代表として採用する。
+
+    原因(原因分類・原因元)は build_cause_rows と同じ優先順で、
+      1. CS_返金の「管理用メモ」に記載された原因(運用変更後)
+      2. CS_登録【分類用】の「原因分類」「原因元」列
+    の順に採用する。返金額・返品有無もここで拾う。
+    """
+    index: dict[str, dict] = {}
+
+    def _blank():
+        return {"sr_count": 0, "sr_major": "", "sr_minor": "", "cause_major": "", "cause_part": "",
+                "refund_amount": 0.0, "returned": 0}
+
+    # --- 1) CS_登録【分類用】(無ければCS_登録)から SR件数・大項目・小項目・返品有無 ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_bunruiyou") or w.files.get("cs_touroku")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "商品ID" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "登録"))
+    if frames:
+        all_df = concat_and_dedup(frames, id_col="CS ID")
+        all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+        all_df = all_df[all_df["ステータス"].fillna("").astype(str).str.strip() != "スルー"].copy()
+        all_df = all_df[all_df["種別"].fillna("").astype(str).str.strip() == "SR"].copy()
+        has_bunrui = "分類" in all_df.columns
+        has_cause = "原因分類" in all_df.columns
+        for _, r in all_df.iterrows():
+            nid = normalize_product_id(r.get("商品ID"))
+            if not nid:
+                continue
+            rec = index.setdefault(nid, _blank())
+            rec["sr_count"] += 1
+            if has_bunrui and not rec["sr_major"]:
+                major = extract_major_category(r.get("分類"))
+                if major:
+                    rec["sr_major"] = major
+                    rec["sr_minor"] = extract_minor_category(r.get("分類")) or "(小項目なし)"
+            if has_cause and not rec["cause_major"]:
+                cm = str(r.get("原因分類") or "").strip()
+                if cm and cm.lower() != "nan":
+                    rec["cause_major"] = cm
+                    cp = str(r.get("原因元") or "").strip()
+                    rec["cause_part"] = cp if cp and cp.lower() != "nan" else "(不明)"
+            if str(r.get("返品") or "").strip() == "あり":
+                rec["returned"] = 1
+
+    # --- 2) CS_返金から 返金額と、管理用メモに書かれた原因(こちらを優先) ---
+    frames = []
+    for w in weeks:
+        raw = w.files.get("cs_henkin")
+        if raw is None:
+            continue
+        df = read_csv_bytes(raw)
+        if "商品ID" not in df.columns:
+            continue
+        frames.append(tag_by_date(df, w, "返金日"))
+    if frames:
+        all_df = concat_and_dedup(frames, id_col="CS ID")
+        all_df = all_df[~all_df["拠点"].map(is_excluded_location)].copy()
+        has_memo = "管理用メモ" in all_df.columns
+        amounts = to_excl_tax(to_numeric(all_df["返金額"])) if "返金額" in all_df.columns else None
+        for pos, (_, r) in enumerate(all_df.iterrows()):
+            nid = normalize_product_id(r.get("商品ID"))
+            if not nid:
+                continue
+            rec = index.setdefault(nid, _blank())
+            if amounts is not None:
+                amt = amounts.iloc[pos]
+                if amt == amt:  # NaNでない
+                    rec["refund_amount"] += float(amt)
+            if str(r.get("返品") or "").strip() == "あり":
+                rec["returned"] = 1
+            if has_memo:
+                cm, cp = parse_memo_cause(r.get("管理用メモ"))
+                if cm:  # 返金メモの原因は分類用ファイルより優先する
+                    rec["cause_major"] = cm
+                    rec["cause_part"] = cp or "(不明)"
+    return index
+
+
+def build_item_detail_rows(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]],
+    stats: ExclusionStats
+) -> list[dict]:
+    """⑦赤字ページのドリルダウン用に、商品1件ごとの明細を作る。
+
+    全出荷商品(28万点超)を載せるとファイルが巨大になるため、対象を
+      ・赤字だった商品(粗利損ベース または 最終利益ベースのいずれか)
+      ・SRが発生した商品(赤字でなくても含める)
+    に絞る。この2つが「なぜ利益が出なかったのか」を追うために必要な母集団になる。
+    """
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return []
+    sr_index = build_item_sr_index(weeks, stats)
+
+    keep_sr = d["norm_product_id"].map(lambda nid: (sr_index.get(nid, {}).get("sr_count", 0) > 0) if nid else False)
+    keep = (d["accounting_profit"] < 0) | (d["final_profit_item"] < 0) | keep_sr
+    d = d[keep].copy()
+    if d.empty:
+        return []
+
+    blank = {"sr_count": 0, "sr_major": "", "sr_minor": "", "cause_major": "", "cause_part": "",
+             "refund_amount": 0.0, "returned": 0}
+    out = []
+    for _, r in d.iterrows():
+        nid = r["norm_product_id"]
+        sr = sr_index.get(nid) or blank
+        out.append({
+            "week_start": r["week_start"], "week_end": r["week_end"], "year_month": r["year_month"],
+            "location": r["location"], "category": r["category"], "condition": r["condition"],
+            "price_band": r["price_band"], "price_band_sort": int(r["price_band_sort"]),
+            "procurement_type": r["procurement_type"],
+            "buyer": r.get("buyer") or "(不明)",
+            "product_id": nid or "",
+            # 金額はすべて税抜に統一(販売価格・買取価格は元データが税込のため÷1.1済み)
+            "buy_price": _safe_float(to_excl_tax(r["買取価格_num"])),
+            "expected_price": _safe_float(to_excl_tax(r["販売価格_num"])),
+            "sale_price": _safe_float(r["落札価格_num"]),
+            "expected_profit": _safe_float(r["expected_profit"]),
+            "actual_profit": _safe_float(r["actual_profit"]),
+            "variance": _safe_float(r["variance"]),
+            "lost_shipping": _safe_float(r["lost_shipping_amount"]),
+            "return_shipping": _safe_float(r["return_shipping_amount"]),
+            "final_profit": _safe_float(r["final_profit_item"]),
+            "sr_count": int(sr["sr_count"]),
+            "sr_major": sr["sr_major"] or ("(分類なし)" if sr["sr_count"] else ""),
+            "sr_minor": sr["sr_minor"] or ("(小項目なし)" if sr["sr_count"] else ""),
+            "cause_major": sr["cause_major"] or ("(未記入)" if sr["sr_count"] else ""),
+            "cause_part": sr["cause_part"] or ("(未記入)" if sr["sr_count"] else ""),
+            "refund_amount": _safe_float(sr["refund_amount"]),
+            "returned": int(sr["returned"]),
+        })
+    out.sort(key=lambda x: (x["week_start"], x["location"], x["category"]))
+    return out
+
+
+def aggregate_deficit(
+    weeks: list[WeekFiles], detail: pd.DataFrame, cost_master: dict[str, tuple[float, float]]
+) -> pd.DataFrame:
+    """赤字(原価割れ)商品を週×カテゴリ×procurement_type(仕入れ方法)で集計する。
+
+    赤字の定義: 最終利益が0未満の商品。最終利益の定義は aggregate_deficit_modes と同じで
+        落札価格 - 買取価格/1.1 - (返品ありなら 発送送料/1.1 + 返送料/1.1)
+    返品されなかった商品の発送送料は、お客様から受け取った額をそのまま配送業者に支払う
+    ので損益ゼロとみなし差し引かない。返品された商品は送料をお客様に返金する一方で
+    配送業者への支払は戻らないため、発送送料と返送料の両方を損失として差し引く。
+
+    total_deficit は正の値=赤字の大きさとして統一する(最終利益の絶対値)。
+    """
+    if detail.empty:
+        return pd.DataFrame(columns=DEFICIT_COLUMNS)
+
+    # 損益の定義は aggregate_deficit_modes の「最終利益」と完全に揃える。
+    #   最終利益 = 落札価格 - 買取価格/1.1 - (返品ありなら 発送送料/1.1 + 返送料/1.1)
+    d = aggregate_deficit_modes(weeks, detail, cost_master)
+    if d.empty:
+        return pd.DataFrame(columns=DEFICIT_COLUMNS)
+    d["net_profit"] = d["final_profit_item"]
+    deficit = d[d["net_profit"] < 0].copy()
+    if deficit.empty:
+        return pd.DataFrame(columns=DEFICIT_COLUMNS)
+    deficit["deficit_amount"] = -deficit["net_profit"]
 
     grouped = (
         deficit.groupby(["week_start", "week_end", "year_month", "location", "category", "procurement_type"])
@@ -1750,7 +2867,9 @@ def aggregate_deficit(
             count=("net_profit", "size"),
             total_deficit=("deficit_amount", "sum"),
             shipping_fee_total=("shipping_fee", "sum"),
+            lost_shipping_total=("lost_shipping_amount", "sum"),
             return_shipping_total=("return_shipping_amount", "sum"),
+            returned_count=("is_returned", "sum"),
         )
         .reset_index()
     )
@@ -1779,7 +2898,9 @@ def build_deficit_rows(
             "total_deficit": _safe_float(r["total_deficit"]),
             "avg_deficit_per_item": _safe_float(r["avg_deficit_per_item"]),
             "shipping_fee_total": _safe_float(r["shipping_fee_total"]),
+            "lost_shipping_total": _safe_float(r["lost_shipping_total"]),
             "return_shipping_total": _safe_float(r["return_shipping_total"]),
+            "returned_count": int(r["returned_count"]),
         }
         for _, r in df.iterrows()
     ]
@@ -1970,9 +3091,64 @@ def build_customer_clusters(weeks: list[WeekFiles]) -> tuple[pd.DataFrame, list[
     n = len(tsujo)
     uf = _UnionFind(n)
     log: list[str] = []
+
+    # 【名寄せキーの見直し(2026-08)】
+    # 以前は「氏名だけの一致」でも同一人物とみなしていたため、同姓同名を起点に
+    # 住所→電話→氏名…と連鎖的に結合し、4,499通りの氏名・7,021取引が1人に
+    # まとめられる過剰結合が発生していた。対策として:
+    #   1. 氏名単独では結合しない。氏名は「住所+氏名」の複合キーとしてのみ使う。
+    #   2. 1つのキーに紐づく氏名が MAX_NAMES_PER_KEY を超える場合は、
+    #      配送センター・代行業者・ダミー値とみなして結合に使わない。
+    MAX_NAMES_PER_KEY = 5
+    addr_name_key = pd.Series(
+        [(a + "|" + nm) if (a and nm) else "" for a, nm in zip(addr_key, name_key)],
+        index=tsujo.index,
+    )
+
+    # 共有キー(1つの値に多数の氏名がぶら下がる値)は「個人」ではなく
+    # 転送代行業者・法人拠点とみなす。ただし単に無視するのではなく、
+    # その拠点単位で1グループにまとめたうえで「業者拠点」と印を付ける。
+    # こうすることで、
+    #   ・個人顧客の統計に業者がまぎれ込まない
+    #   ・業者拠点ごとのSR発生状況をまとめて確認できる
+    # の両方を満たせる。
+    biz_group_key = pd.Series([""] * n, index=tsujo.index)
+
+    def _split_shared_keys(key_series, key_label):
+        """個人用キーと、業者拠点用のグループキーに分ける。"""
+        names_per_value: dict[str, set] = {}
+        for value, nm in zip(key_series.to_numpy(), name_key.to_numpy()):
+            if not value:
+                continue
+            names_per_value.setdefault(value, set()).add(nm)
+        shared = {v for v, names in names_per_value.items() if len(names) > MAX_NAMES_PER_KEY}
+        if shared:
+            total = sum(1 for v in key_series.to_numpy() if v in shared)
+            print(f"[情報] {key_label}: {len(shared)}件の値(受注{total:,}件)は氏名が{MAX_NAMES_PER_KEY}種類を"
+                  f"超えるため「業者拠点」として個人とは別にまとめます", flush=True)
+            for idx, value in enumerate(key_series.to_numpy()):
+                if value in shared and not biz_group_key.iat[idx]:
+                    biz_group_key.iat[idx] = key_label + ":" + value
+        return key_series.map(lambda v: "" if (not v or v in shared) else v)
+
+    # 氏名との複合キー。電話・メールが「共有キー」として除外された場合でも、
+    # 氏名まで一致していれば同一人物とみなせるので、複合キーは除外の前に作っておく。
+    name_tel_key = pd.Series(
+        [(t + "|" + nm) if (t and nm) else "" for t, nm in zip(tel_key, name_key)], index=tsujo.index)
+    name_mail_key = pd.Series(
+        [(e + "|" + nm) if (e and nm) else "" for e, nm in zip(mail_key, name_key)], index=tsujo.index)
+
+    # 住所を先に判定する(同じ倉庫が電話・メールも共有しているケースを1グループにまとめるため)
+    addr_key_solo = _split_shared_keys(addr_key, "住所")
+    tel_key = _split_shared_keys(tel_key, "電話番号")
+    mail_key = _split_shared_keys(mail_key, "メールアドレス")
+
     for key_name, key_series in (
-        ("氏名", name_key),
-        ("住所", addr_key),
+        ("業者拠点", biz_group_key),
+        ("住所+氏名", addr_name_key),
+        ("電話番号+氏名", name_tel_key),
+        ("メールアドレス+氏名", name_mail_key),
+        ("住所", addr_key_solo),
         ("電話番号", tel_key),
         ("メールアドレス", mail_key),
     ):
@@ -1993,12 +3169,20 @@ def build_customer_clusters(weeks: list[WeekFiles]) -> tuple[pd.DataFrame, list[
 
     tsujo = tsujo.copy()
     tsujo["_cluster"] = [uf.find(i) for i in range(n)]
+    # クラスタ内に1件でも業者拠点キーがあれば、そのクラスタ全体を「業者拠点」とする
+    biz_clusters = set(tsujo.loc[biz_group_key != "", "_cluster"].unique())
+    tsujo["_customer_type"] = tsujo["_cluster"].map(lambda c: "業者拠点" if c in biz_clusters else "個人")
+    print(f"[情報] 業者拠点として扱うグループ: {len(biz_clusters):,}件 "
+          f"(受注{int((tsujo['_customer_type'] == '業者拠点').sum()):,}件)", flush=True)
     return tsujo, log
 
 
 def build_customer_segment_rows(
-    weeks: list[WeekFiles], cost_master: dict[str, tuple[float, float]]
-) -> tuple[list[dict], list[dict], dict]:
+    weeks: list[WeekFiles],
+    cost_master: dict[str, tuple[float, float]],
+    attr_master: Optional[dict[str, tuple[str, str, int]]] = None,
+    category_master: Optional[dict[str, str]] = None,
+) -> tuple[list[dict], list[dict], dict, list[dict]]:
     """顧客(名寄せクラスタ)単位の指標を算出し、
     (ダッシュボード用の匿名行, customer_lookup.csv用のPII行, 集計メタ情報) を返す。
 
@@ -2034,6 +3218,7 @@ def build_customer_segment_rows(
             order_count=("受注ID", "size"),
             bundle_order_count=("_is_bundle", "sum"),
             sales_amount=("_sales", "sum"),
+            customer_type=("_customer_type", "first"),
         )
         .reset_index()
     )
@@ -2053,6 +3238,12 @@ def build_customer_segment_rows(
                 for nid in sdf["商品ID"].map(normalize_product_id):
                     if nid:
                         shukka_ids.add(nid)
+    # 顧客ドリルダウン用の商品属性(状態・価格帯・カテゴリ)。未指定ならここで作る。
+    attr_master = attr_master if attr_master is not None else build_product_attr_master(weeks)
+    category_master = category_master if category_master is not None else build_product_category_master(weeks)
+    purchase_detail = pd.DataFrame()
+    sr_detail = pd.DataFrame()
+    refund_detail = pd.DataFrame()
     shipped_agg = pd.DataFrame(columns=["_cluster", "shipped_count", "gross_profit"])
     if jpon_frames:
         jpon = concat_and_dedup(jpon_frames, id_col="オークションID")
@@ -2086,6 +3277,18 @@ def build_customer_segment_rows(
             .agg(shipped_count=("受注ID", "size"), gross_profit=("粗利_row", "sum"))
             .reset_index()
         )
+        # 顧客詳細(⑧のドリルダウン)用: 購入をカテゴリ・コンディション・価格帯で分解する。
+        # 商品名などの自由記述は公開ページに出さないため、ここでは集計値のみを持つ。
+        attrs = merged["_norm_id"].map(lambda nid: attr_master.get(nid, UNKNOWN_ATTR) if nid else UNKNOWN_ATTR)
+        merged["_condition"] = attrs.map(lambda t: normalize_condition(t[0]))
+        merged["_price_band"] = attrs.map(lambda t: t[1])
+        merged["_band_sort"] = attrs.map(lambda t: t[2])
+        merged["_category"] = merged["_norm_id"].map(category_master).fillna("不明")
+        purchase_detail = (
+            merged.groupby(["_cluster", "_category", "_condition", "_price_band", "_band_sort"])
+            .agg(count=("受注ID", "size"), sales_amount=("落札金額_num", "sum"), gross_profit=("粗利_row", "sum"))
+            .reset_index()
+        )
 
     # --- SR発生件数(CS_登録【分類用】の 種別=SR を「受注ID」で紐付け) ---
     cs_frames = []
@@ -2111,6 +3314,22 @@ def build_customer_segment_rows(
                 matched.groupby("_cluster").size().reset_index(name="sr_count")
             )
             sr_agg["_cluster"] = sr_agg["_cluster"].astype(per_cluster["_cluster"].dtype)
+            # 顧客詳細用: SRをカテゴリ×大項目×返品有無で分解する(自由記述は含めない)
+            md = matched.copy()
+            md["_category"] = md["カテゴリ"].fillna("不明").replace("", "不明")
+            if "分類" in md.columns:
+                md["_major"] = md["分類"].map(extract_major_category).fillna("(未分類)")
+                md["_minor"] = md["分類"].map(extract_minor_category).fillna("(小項目なし)")
+            else:
+                md["_major"] = "(未分類)"
+                md["_minor"] = "(小項目なし)"
+            md["_returned"] = md["返品"].fillna("").astype(str).str.strip().map(lambda v: "返品あり" if v == "あり" else "返品なし")
+            md["_refund"] = to_numeric(md["返金額"]) if "返金額" in md.columns else 0
+            sr_detail = (
+                md.groupby(["_cluster", "_category", "_major", "_minor", "_returned"])
+                .agg(count=("受注ID", "size"), refund_amount=("_refund", "sum"))
+                .reset_index()
+            )
 
     # --- 返金額・返送料(CS_返金を「受注ID」で紐付け) ---
     henkin_frames = []
@@ -2128,7 +3347,8 @@ def build_customer_segment_rows(
         hen = hen[hen["_cluster"].notna()].copy()
         meta["refund_rows_matched"] = int(len(hen))
         if not hen.empty:
-            hen["返金額_num"] = to_numeric(hen["返金額"])
+            # 返金額・返送料はいずれも税込のため税抜に換算する
+            hen["返金額_num"] = to_excl_tax(to_numeric(hen["返金額"]))
             hen["_norm_id"] = hen["商品ID"].map(normalize_product_id)
             is_return = hen["返品"].fillna("").astype(str).str.strip() == "あり"
 
@@ -2136,10 +3356,19 @@ def build_customer_segment_rows(
                 if norm_id is None:
                     return 0.0
                 info = cost_master.get(norm_id)
-                return info[1] if info else 0.0
+                return to_excl_tax(info[1]) if info else 0.0
 
             hen["返送料_num"] = 0.0
             hen.loc[is_return, "返送料_num"] = hen.loc[is_return, "_norm_id"].map(_shipping_fee)
+            # 顧客詳細用: 返金をカテゴリ×返品有無で分解する(返金額はCS_返金が正)
+            hen["_category"] = hen["カテゴリ"].fillna("不明").replace("", "不明") if "カテゴリ" in hen.columns else "不明"
+            hen["_returned"] = is_return.map(lambda v: "返品あり" if v else "返品なし")
+            refund_detail = (
+                hen.groupby(["_cluster", "_category", "_returned"])
+                .agg(count=("返金額_num", "size"), refund_amount=("返金額_num", "sum"),
+                     return_shipping_cost=("返送料_num", "sum"))
+                .reset_index()
+            )
             refund_agg = (
                 hen.groupby("_cluster")
                 .agg(refund_amount=("返金額_num", "sum"), return_shipping_cost=("返送料_num", "sum"))
@@ -2204,6 +3433,8 @@ def build_customer_segment_rows(
                 {
                     "segment": segment,
                     "label": r["label"],
+                    # 個人 / 業者拠点(転送代行・法人窓口とみなしたグループ)
+                    "customer_type": r.get("customer_type", "個人"),
                     "rank": int(r["rank"]),
                     "order_count": int(r["order_count"]),
                     "bundle_order_count": int(r["bundle_order_count"]),
@@ -2227,7 +3458,50 @@ def build_customer_segment_rows(
     label_of_cluster = dict(zip(cust["_cluster"], cust["label"]))
     lookup = _build_customer_lookup_records(tsujo, shown_clusters, label_of_cluster)
     meta["lookup_count"] = len(lookup)
-    return rows, lookup, meta
+
+    # --- 顧客ドリルダウン用の内訳(⑧で顧客をクリックしたときに表示する) ---
+    # 一覧に出る顧客(SRリピーター+ロイヤルカスタマー)のぶんだけ作る。
+    # 商品名やSRの自由記述は含めず、件数・金額の集計のみ(公開ページに載るため)。
+    # すべての内訳行で同じキーを持たせる(埋め込み時に列配列化するため、
+    # 種類ごとにキーが違うと後ろの種類の列が失われてしまう)
+    DETAIL_FIELDS = {
+        "label": "", "kind": "", "category": "", "condition": "", "price_band": "",
+        "price_band_sort": 0, "major": "", "minor": "", "returned": "",
+        "count": 0, "sales_amount": 0.0, "gross_profit": 0.0, "refund_amount": 0.0,
+    }
+
+    def _detail(**kw):
+        rec = dict(DETAIL_FIELDS)
+        rec.update(kw)
+        return rec
+
+    detail_rows: list[dict] = []
+    if not purchase_detail.empty:
+        pd_shown = purchase_detail[purchase_detail["_cluster"].isin(shown_clusters)]
+        for _, r in pd_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="purchase",
+                category=r["_category"], condition=r["_condition"],
+                price_band=r["_price_band"], price_band_sort=int(r["_band_sort"]),
+                count=int(r["count"]), sales_amount=round(float(r["sales_amount"]), 2),
+                gross_profit=round(float(r["gross_profit"]), 2)))
+    if not sr_detail.empty:
+        sr_shown = sr_detail[sr_detail["_cluster"].isin(shown_clusters)]
+        for _, r in sr_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="sr",
+                category=r["_category"], major=r["_major"], minor=r["_minor"], returned=r["_returned"],
+                count=int(r["count"]), refund_amount=round(float(r["refund_amount"]), 2)))
+    if not refund_detail.empty:
+        rf_shown = refund_detail[refund_detail["_cluster"].isin(shown_clusters)]
+        for _, r in rf_shown.iterrows():
+            detail_rows.append(_detail(
+                label=label_of_cluster.get(r["_cluster"], ""), kind="refund",
+                category=r["_category"], returned=r["_returned"],
+                count=int(r["count"]), refund_amount=round(float(r["refund_amount"]), 2)))
+    meta["customer_detail_count"] = len(detail_rows)
+    print(f"[情報] 顧客詳細(内訳)行: {len(detail_rows):,}行", flush=True)
+    return rows, lookup, meta, detail_rows
 
 
 def _mode_value(series: pd.Series) -> str:
@@ -2261,6 +3535,7 @@ def _build_customer_lookup_records(
         records.append(
             {
                 "顧客コード": label_of_cluster.get(cluster, ""),
+                "種別": g["_customer_type"].iloc[0] if "_customer_type" in g.columns else "個人",
                 "代表氏名": rep_name,
                 "カナ": _mode_value(rep_rows["カナ"]),
                 "電話番号": _mode_value(rep_rows["電話番号"]),
@@ -2280,6 +3555,7 @@ def _build_customer_lookup_records(
 
 CUSTOMER_LOOKUP_FIELDS = [
     "顧客コード",
+    "種別",
     "代表氏名",
     "カナ",
     "電話番号",
@@ -2366,48 +3642,18 @@ def main() -> None:
     parser.add_argument("--local-dir", help="local モード時のキャッシュディレクトリルート")
     parser.add_argument("--credentials", help="drive モード時のサービスアカウントJSONパス")
     parser.add_argument("--output", required=True, help="出力JSONパス")
-    parser.add_argument(
-        "--roots",
-        help=(
-            "drive モード時に探索する起点フォルダIDをカンマ区切りで指定する。"
-            "省略時は FISCAL_ROOT_ID (21期フォルダ) のみ。"
-            "20期分のCSVを別フォルダに置いた場合は '21期ID,20期ID' のように並べる。"
-            "環境変数 DASHBOARD_ROOT_IDS でも指定可能(引数が優先)。"
-        ),
-    )
     args = parser.parse_args()
 
     if args.mode == "local":
         if not args.local_dir:
             parser.error("--mode local の場合は --local-dir が必要です")
         backend: BaseDriveBackend = LocalCacheDriveBackend(args.local_dir, FISCAL_ROOT_ID)
-        root_ids = [FISCAL_ROOT_ID]
     else:
         backend = LiveDriveBackend(args.credentials)
-        import os as _os
 
-        raw_roots = args.roots or _os.environ.get("DASHBOARD_ROOT_IDS") or FISCAL_ROOT_ID
-        root_ids = [r.strip() for r in raw_roots.split(",") if r.strip()]
-
-    print(f"[INFO] {FISCAL_YEAR_LABEL} フォルダ(root)を探索中... roots={len(root_ids)}件")
-    weeks = []
-    for rid in root_ids:
-        found_weeks = discover_week_files(backend, rid)
-        print(f"[INFO]   root={rid}: 週フォルダ {len(found_weeks)}件")
-        weeks.extend(found_weeks)
-    # 複数rootをまたいで時系列順に並べ直す(concat_and_dedupが「最後の出現を採用」する前提のため重要)
-    weeks.sort(key=lambda w: w.week_start)
+    print(f"[INFO] {FISCAL_YEAR_LABEL} フォルダ(root)を探索中...")
+    weeks = discover_week_files(backend, FISCAL_ROOT_ID)
     print(f"[INFO] 検出した週フォルダ数: {len(weeks)}")
-
-    if not weeks:
-        # ここで止めないと、空の集計結果で既存のダッシュボードを上書きしてしまう。
-        raise SystemExit(
-            "[ERROR] 週フォルダが1件も見つかりませんでした。以下を確認してください:\n"
-            "  1. サービスアカウントが共有ドライブのメンバー(閲覧者)に追加されているか\n"
-            "  2. 指定したフォルダIDが正しいか (--roots / DASHBOARD_ROOT_IDS)\n"
-            "  3. 対象フォルダ配下にCSVファイルが存在するか\n"
-            f"  指定したroot: {root_ids}"
-        )
     for w in weeks:
         found = sorted(w.files.keys())
         print(f"  - {w.week_start}~{w.week_end}: {found}")
