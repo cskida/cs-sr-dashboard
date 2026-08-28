@@ -4,8 +4,9 @@ name: ダッシュボード更新
 #   1. 毎週月曜 9:00 (日本時間) に自動実行
 #   2. GitHubの画面から「Run workflow」ボタンで手動実行(誰でも・いつでも)
 on:
-  schedule:
-    - cron: '0 0 * * 1'   # UTC 00:00 = 日本時間 09:00
+  # schedule:
+#     - cron: '0 0 * * 1'   # UTC 00:00 = 日本時間 09:00
+# 2026-08-28: 自動実行(schedule)を停止しました。手動の Run workflow のみ有効です。
   workflow_dispatch:
 
 permissions:
