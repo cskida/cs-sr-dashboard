@@ -152,7 +152,7 @@
     <select id="period"></select>
   </div>
   <div class="ctl ctl-loc" id="ctlLoc">
-    <label>拠点フィルタ(④拠点×カテゴリ・⑧赤字ページで使用。どちらも「全拠点」を選べます)</label>
+    <label>拠点フィルタ(①全拠点・③カテゴリ詳細・④拠点×カテゴリ・⑤⑥⑦⑧で使用。「全拠点」を選べます)</label>
     <select id="locFilter"></select>
   </div>
   <!-- 各指標をどの日付でその週に置くかの切替。①〜④ページでのみ表示する。
@@ -5401,9 +5401,12 @@ function renderCauseDetailDrill(prefix, major) {
   const cats = acCatMultiSel ? getMultiSelectValues(acCatMultiSel) : [];
   const isAll = cats.length === 0 || cats.includes(ALL_CAT);
   const catSet = isAll ? null : new Set(cats);
+  // 2026-09-18: ③でも拠点フィルタを効かせる
+  const dLoc = locSel.value || ALL_LOC, dAllLoc = (dLoc === ALL_LOC);
   const rows = (typeof CAUSE_DETAIL_ROWS === 'undefined' ? [] : CAUSE_DETAIL_ROWS).filter(r =>
     r.cause_major === major &&
     (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) &&
+    (dAllLoc || r.location === dLoc) &&
     (!catSet || catSet.has(r.category)));
 
   document.getElementById(prefix + 'CauseDetailTitle').textContent = '「' + major + '」の内容の内訳';
@@ -5412,7 +5415,8 @@ function renderCauseDetailDrill(prefix, major) {
   rows.forEach(r => bySrc.set(r.detail_source, (bySrc.get(r.detail_source) || 0) + (r.count || 0)));
   const srcText = Array.from(bySrc.entries()).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => k + ' ' + fmtInt(v) + '件').join(' / ');
-  if (meta) meta.textContent = '対象期間: ' + currentPeriodLabel() + ' / カテゴリ: ' +
+  if (meta) meta.textContent = '対象期間: ' + currentPeriodLabel() + ' / 拠点: ' +
+    (dAllLoc ? '全拠点' : dLoc) + ' / カテゴリ: ' +
     (isAll ? '全カテゴリ' : cats.join(' + ')) + (srcText ? '　読み取り元: ' + srcText : '');
 
   const el = document.getElementById(prefix + 'CauseDetailTable');
@@ -5461,20 +5465,23 @@ if (typeof document.addEventListener === 'function') {
 
 // ③カテゴリ詳細: 選択カテゴリの昨対比較(返金/SR/質問/問合せ)を4枚描く。
 // 期間粒度に関係なく、決算月(7月〜6月)×期の比較として常に表示する。
-function renderCatDetailYoy(catSet, label) {
+function renderCatDetailYoy(catSet, label, locF, locLabel, allLoc) {
+  const baseName = allLoc ? '全社平均(全カテゴリ)' : (locLabel + '平均(全カテゴリ)');
   const scope = document.getElementById('acYoyScope');
   if (scope) {
     scope.textContent = catSet
-      ? (label + '　実線=' + label + ' / 破線=全社平均(全カテゴリ)')
-      : (label + '(= 全社)');
+      ? (label + ' × ' + locLabel + '　実線=' + label + ' / 破線=' + baseName)
+      : (label + ' × ' + locLabel + (allLoc ? '(= 全社)' : '(= ' + locLabel + '全体)'));
   }
-  const rowFilter = catSet ? (r => catSet.has(r.category)) : null;
+  const rowFilter = (catSet || locF)
+    ? (r => (!catSet || catSet.has(r.category)) && (!locF || locF(r)))
+    : null;
   const FIELDS = ['refund_amount', 'refund_count', 'sales_amount',
     'sr_count', 'shipped_count', 'question_count', 'listed_count', 'inquiry_count'];
   const ser = buildYoyGeneric(ROWS, FIELDS, rowFilter);
   // 選択カテゴリを全社(全カテゴリ)水準と比べられるように破線を重ねる。
   // 全カテゴリ選択時は選択=全社で線が重なるだけなので破線は出さない。
-  const baseSer = catSet ? buildYoyGeneric(ROWS, FIELDS, null) : null;
+  const baseSer = catSet ? buildYoyGeneric(ROWS, FIELDS, locF) : null;
   const specs = [
     ['acYoyRefund', 'refund_amount', d => d.sales_amount ? d.refund_amount / d.sales_amount : null,
       '返金額', '返金額率', '金額(¥)', true, '返金額・返金額率'],
@@ -5487,7 +5494,7 @@ function renderCatDetailYoy(catSet, label) {
   ];
   specs.forEach(([id, bar, rateFn, barLabel, lineLabel, leftLabel, money, title]) => {
     renderChart(id, yoyGenericConfig(ser, bar, rateFn, barLabel, lineLabel, leftLabel, money, title,
-      baseSer, '全社平均'));
+      baseSer, allLoc ? '全社平均' : locLabel + '平均'));
   });
 }
 
@@ -5497,23 +5504,30 @@ function renderCatDetailPage() {
   const catSet = isAll ? null : new Set(cats);
   const label = isAll ? '全カテゴリ'
     : (cats.length === 1 ? cats[0] : cats.join(' + ') + '(合算・' + cats.length + 'カテゴリ)');
+  // 2026-09-18: ③でも拠点フィルタを効かせる。
+  // KPIカードの「平均」は、拠点を選んでいるときは“その拠点の全カテゴリ平均”にする。
+  const acLoc = locSel.value || ALL_LOC, acAllLoc = (acLoc === ALL_LOC);
+  const acLocLabel = acAllLoc ? '全拠点' : acLoc;
+  const locF = acAllLoc ? null : (r => r.location === acLoc);
   const t = document.getElementById('acDrillTitle');
-  if (t) t.textContent = 'カテゴリ詳細 ― ' + label;
-  const catF = catSet ? (r => catSet.has(r.category)) : null;
+  if (t) t.textContent = 'カテゴリ詳細 ― ' + label + (acAllLoc ? '' : '　拠点: ' + acLoc);
+  const catF = (catSet || locF)
+    ? (r => (!catSet || catSet.has(r.category)) && (!locF || locF(r)))
+    : null;
 
   // ④拠点×カテゴリから移設したブロック
-  renderCatDetailKpiAndTrend(catF, label);
+  renderCatDetailKpiAndTrend(catF, label, locF, acLocLabel, acAllLoc);
 
-  renderCatDetailYoy(catSet, label);
+  renderCatDetailYoy(catSet, label, locF, acLocLabel, acAllLoc);
   renderImprovementSection('ac', catF);
   if (causeDrillMajor) renderCauseDetailDrill('ac', causeDrillMajor);
 }
 
 // ④から移設: 選択カテゴリのKPI / YoY / 推移(vs 全カテゴリ平均) / ジャンク比率 / 期間別詳細
-function renderCatDetailKpiAndTrend(catF, label) {
+function renderCatDetailKpiAndTrend(catF, label, locF, locLabel, allLoc) {
   const gran = granSel.value, periodKey = periodSel.value;
   const cur = computeAgg(gran, periodKey, catF);
-  const base = computeAgg(gran, periodKey, null);
+  const base = computeAgg(gran, periodKey, locF || null);
   const yoyKey = yoyPeriodKey(gran, periodKey);
   const hasPrev = yoyKey && availablePeriods(gran).some(p => p.key === yoyKey);
   const prev = hasPrev ? computeAgg(gran, yoyKey, catF) : null;
@@ -5522,12 +5536,13 @@ function renderCatDetailKpiAndTrend(catF, label) {
       { gran: gran, periodKey: periodKey, rowFilter: catF });
   }
   renderYoyProgressBox('yoyBoxCategory', 'yoyTableCategory', 'yoyPeriodLabelCategory', gran, periodKey, catF);
-  renderComparisonTrendCharts('catTrend', catF, null, '全カテゴリ平均');
+  renderComparisonTrendCharts('catTrend', catF, locF || null,
+    allLoc ? '全カテゴリ平均' : locLabel + 'の全カテゴリ平均');
 
   // カテゴリ別のジャンク出品比率(④の拠点×カテゴリ ヒートマップの置き換え)
   const jl = document.getElementById('acJunkPeriodLabel');
   if (jl) jl.textContent = currentPeriodLabel();
-  let jd = buildBreakdown(gran, 'category', periodKey, null)
+  let jd = buildBreakdown(gran, 'category', periodKey, locF || null)
     .filter(d => d.listed_count > 0)
     .sort((a, b) => (b.junk_listed_rate || 0) - (a.junk_listed_rate || 0));
   renderChart('acJunkChart', dualAxisConfig(jd.map(d => d.name), jd.map(d => d.junk_listed_count),
@@ -5535,10 +5550,9 @@ function renderCatDetailKpiAndTrend(catF, label) {
 
   // 選択カテゴリ×選択拠点 推移(期間粒度)
   const granLabel = { week: '週次', month: '月次', quarter: '四半期', half: '半期', year: '通期' }[gran] || gran;
-  const loc = locSel.value || ALL_LOC, allLoc = (loc === ALL_LOC);
-  const rowF = r => (allLoc || r.location === loc) && (!catF || catF(r));
+  const rowF = r => (!locF || locF(r)) && (!catF || catF(r));
   const tt = document.getElementById('acLocCatTableTitle');
-  if (tt) tt.textContent = label + ' × ' + (allLoc ? '全拠点' : loc) + ' 推移（' + granLabel + '）';
+  if (tt) tt.textContent = label + ' × ' + locLabel + ' 推移（' + granLabel + '）';
   const trendData = buildTrendAligned(gran, rowF).map(x => Object.assign({ name: x.label }, x));
   renderTableInto('acDetailTableLocCat', trendData, '期間', 24);
 }
@@ -6310,7 +6324,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/18 07:58 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/18 10:03 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
