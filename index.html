@@ -2889,9 +2889,10 @@ function cpBuildInsight(data, dimLabel, totals) {
   lines.push('全体: 出荷' + fmtInt(t.shipped) + '件、SR' + fmtInt(totals.sr_count) + '件(SR率' + fmtPct(t.sr_rate) +
              ')、返金' + fmtInt(totals.refund_count) + '件・' + fmtYen(totals.refund_amount) + '円(返金率' + fmtPct(t.refund_rate) +
              ')、出品' + fmtInt(totals.listed_count) + '件に対し質問' + fmtInt(totals.question_count) + '件(質問率' + fmtPct(t.question_rate) + ')。');
-  // 2026-09-20: ①〜④と分母・金額の定義が少し違うので、数字が合わないという誤解を防ぐ注記を必ず出す
-  lines.push('※このページの出荷点数は商品_出荷(JPONベース)、返金額は税込の単純合計です。'
-           + '①〜④ページ(受注_通常_出荷ベース・税抜・返品時は送料を除外)とは数%ずれます。SR件数・質問数・出品数は①〜④と一致します。');
+  // 2026-09-20: 出荷・売上・粗利・返金額・SR・質問・出品のすべてを①〜④と同じ定義にそろえた。
+  lines.push('※出荷点数・売上・粗利・返金額・SR件数・質問数・出品数は①〜④ページと同じ定義・同じ基準日です'
+           + '(金額は集計の足し順による端数で数円ずれることがあります)。'
+           + '商品の状態・落札価格が分からず「不明」に入るのは全期間で148点(0.05%)です。');
   const sized = data.filter(d => (d.shipped_count || d.count || 0) >= 30);
   const pool = sized.length ? sized : data;
   const bySr = pool.slice().sort((a, b) => (cpRates(b).sr_rate || 0) - (cpRates(a).sr_rate || 0));
@@ -6337,7 +6338,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/20 00:16 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/20 01:23 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
