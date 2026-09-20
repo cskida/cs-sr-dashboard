@@ -2889,6 +2889,9 @@ function cpBuildInsight(data, dimLabel, totals) {
   lines.push('全体: 出荷' + fmtInt(t.shipped) + '件、SR' + fmtInt(totals.sr_count) + '件(SR率' + fmtPct(t.sr_rate) +
              ')、返金' + fmtInt(totals.refund_count) + '件・' + fmtYen(totals.refund_amount) + '円(返金率' + fmtPct(t.refund_rate) +
              ')、出品' + fmtInt(totals.listed_count) + '件に対し質問' + fmtInt(totals.question_count) + '件(質問率' + fmtPct(t.question_rate) + ')。');
+  // 2026-09-20: ①〜④と分母・金額の定義が少し違うので、数字が合わないという誤解を防ぐ注記を必ず出す
+  lines.push('※このページの出荷点数は商品_出荷(JPONベース)、返金額は税込の単純合計です。'
+           + '①〜④ページ(受注_通常_出荷ベース・税抜・返品時は送料を除外)とは数%ずれます。SR件数・質問数・出品数は①〜④と一致します。');
   const sized = data.filter(d => (d.shipped_count || d.count || 0) >= 30);
   const pool = sized.length ? sized : data;
   const bySr = pool.slice().sort((a, b) => (cpRates(b).sr_rate || 0) - (cpRates(a).sr_rate || 0));
@@ -3209,8 +3212,15 @@ function renderProfitVarianceCategorySection() {
 // sales_amount/gross_profit/variance_amount)はそのまま合算し、平均系の指標
 // (avg_lead_days/margin_rate/avg_sale_price/avg_profit_price)は合算後の値から
 // 再計算する(単純平均ではなく、countで重み付けした加重平均にする)。
+// 2026-09-20: ⑦のカテゴリ別粗利セクションでも拠点フィルタを効かせる。
+// (それまで category_profit_detail_rows に拠点列が無く、拠点を選んでも全社の数字が出ていた)
+function cpdLoc() { const v = locSel.value || ALL_LOC; return v === ALL_LOC ? null : v; }
+function cpdLocLabel() { return cpdLoc() || '全拠点'; }
+function cpdLocFilter() { const l = cpdLoc(); return l ? (r => r.location === l) : null; }
+
 function buildCategoryProfitDetailAgg(granularity, periodKey) {
-  let rows = CATEGORY_PROFIT_DETAIL_ROWS.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  const _lf = cpdLocFilter();
+  let rows = CATEGORY_PROFIT_DETAIL_ROWS.filter(r => (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) && (!_lf || _lf(r)));
   const map = new Map();
   rows.forEach(r => {
     if (!map.has(r.category)) {
@@ -3240,7 +3250,7 @@ function buildCategoryProfitDetailAgg(granularity, periodKey) {
 
 function renderCategoryProfitDetailSection() {
   const granularity = granSel.value, periodKey = periodSel.value;
-  document.getElementById('cpdPeriodLabel').textContent = currentPeriodLabel();
+  document.getElementById('cpdPeriodLabel').textContent = currentPeriodLabel() + ' / ' + cpdLocLabel();
   let data = buildCategoryProfitDetailAgg(granularity, periodKey);
   data.sort((a, b) => b.sales_amount - a.sales_amount);
 
@@ -3297,9 +3307,11 @@ function renderCategoryProfitDetailSection() {
 function buildCpdTrendSelected(granularity, selectedCats) {
   const periods = availablePeriods(granularity);
   const catSet = new Set(selectedCats);
+  const _lf = cpdLocFilter();
   const perPeriodCat = new Map();
   CATEGORY_PROFIT_DETAIL_ROWS.forEach(r => {
     if (!catSet.has(r.category)) return;
+    if (_lf && !_lf(r)) return;
     const pk = periodKeyFor(r, granularity).key;
     if (!perPeriodCat.has(pk)) perPeriodCat.set(pk, new Map());
     const catMap = perPeriodCat.get(pk);
@@ -3375,11 +3387,12 @@ function renderCpdTrendSection() {
   if (isYoyMode() && typeof CATEGORY_PROFIT_DETAIL_ROWS !== 'undefined' && cpdCatMultiSel) {
     const selCats = getMultiSelectValues(cpdCatMultiSel);
     const catSet = (!selCats.length || selCats.includes(ALL_CAT)) ? null : new Set(selCats);
+    const _lf = cpdLocFilter();
     const ser = buildYoyGeneric(CATEGORY_PROFIT_DETAIL_ROWS,
       ['count', 'sales_amount', 'gross_profit', 'variance_amount', 'cost_amount'],
-      r => !catSet || catSet.has(r.category));
+      r => (!catSet || catSet.has(r.category)) && (!_lf || _lf(r)));
     if (ser.fyNums.length > 1) {
-      document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel();
+      document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel() + ' / ' + cpdLocLabel();
       renderChart('cpdTrendPriceChart', yoyGenericConfig(ser, 'sales_amount',
         d => d.count ? d.sales_amount / d.count / 1000000 : null,
         '売上額', '販売単価(百万円換算)', '金額(¥)', true, '売上額・販売単価'));
@@ -3395,7 +3408,7 @@ function renderCpdTrendSection() {
   }
   if (!cpdCatMultiSel) return;
   const granularity = granSel.value;
-  document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel();
+  document.getElementById('cpdTrendPeriodLabel').textContent = currentPeriodLabel() + ' / ' + cpdLocLabel();
   let selectedCats = getMultiSelectValues(cpdCatMultiSel);
   // 「(全カテゴリ)」または未選択なら全カテゴリを対象にする
   if (!selectedCats.length || selectedCats.includes(ALL_CAT)) selectedCats = cpdCategories.slice();
@@ -6324,7 +6337,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/18 10:03 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/20 00:16 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
