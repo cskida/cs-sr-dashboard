@@ -91,6 +91,16 @@
   .heat-fill { display:block; margin:-7px -10px; padding:7px 10px; text-align:right; }
   .detail-table th:first-child, .detail-table td:first-child { min-width:110px; }
   .detail-table th { line-height:1.3; }
+  /* 2026-09-28: 列が多い表。折り返さず横スクロールし、先頭列(カテゴリ名)は固定して残す。 */
+  .wide-table { width:100%; overflow-x:auto; }
+  .wide-table table { width:auto; min-width:100%; }
+  .wide-table th, .wide-table td { white-space:nowrap !important; height:32px; box-sizing:border-box; }
+  .wide-table thead th:first-child, .wide-table tbody td:first-child {
+    position:sticky; left:0; z-index:2; background:#fff;
+    box-shadow:inset -1px 0 0 #e3e5e8, 1px 0 3px rgba(0,0,0,0.06);
+  }
+  .wide-table thead th:first-child { background:#f5f6f8; z-index:3; }
+  .wide-table tbody tr[data-total] td:first-child { background:#eef1f5; }
   .gridjs-wrapper { width:100% !important; }
   .gridjs-table { width:auto !important; min-width:100%; }
   .cause-pivot-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:14px; margin-bottom:14px; }
@@ -574,21 +584,6 @@
 
 <div class="page-section" id="page-profitvariance">
 
-  <p style="margin:0 0 12px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
-
-  <div class="card" style="margin:0 0 14px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
-    <h3 style="margin:0 0 6px;font-size:14px;color:#7a5b1e;">粗利差異とは</h3>
-    <div style="font-size:12.5px;line-height:1.7;color:#3c4250;">
-      <b>粗利差異 = 「実際」-「見込み」</b>。出品時に見込んでいた販売価格に対して、実際の落札価格がいくら上下したかを表します。<br>
-      　粗利差異 ＝ 実粗利(落札価格-買取価格/1.1) - 見込み粗利(販売価格-買取価格/1.1) ＝ <b>落札価格 - 販売価格</b><br>
-      ・<b style="color:#1f8a4c;">上振れ(プラス)</b> ＝ 見込みより高く売れた。悪いことではなく、<b>買取価格を抑えすぎて買い逃している</b>サインの可能性があります(もう少し高く買っても採算が合う)。<br>
-      ・<b style="color:#c0392b;">下振れ(マイナス)</b> ＝ 見込みより安く売れた。出品時の販売価格の付け方(相場の見立て)を見直す余地があります。<br>
-      ・期間は<b>買取日基準</b>です。対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。
-    </div>
-  </div>
-
-  <div class="kpi-grid" id="pvKpiGrid"></div>
-
   <div class="controls" style="margin-bottom:14px;">
     <div class="ctl">
       <label>カテゴリ(複数選択可。未選択=全カテゴリ)</label>
@@ -607,6 +602,22 @@
       <span class="note" style="margin:0;">拠点は上部の「拠点」から選択します(「全拠点」も選べます)。</span>
     </div>
   </div>
+
+  <div class="card" style="margin:0 0 10px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
+    <h3 style="margin:0 0 6px;font-size:14px;color:#7a5b1e;">粗利差異とは</h3>
+    <div style="font-size:12.5px;line-height:1.7;color:#3c4250;">
+      <b>粗利差異 = 「実際」-「見込み」</b>。出品時に見込んでいた販売価格に対して、実際の落札価格がいくら上下したかを表します。<br>
+      　粗利差異 ＝ 実粗利(落札価格-買取価格/1.1) - 見込み粗利(販売価格<span style="color:#7a5b1e;">※</span>-買取価格/1.1) ＝ <b>落札価格 - 販売価格<span style="color:#7a5b1e;">※</span></b><br>
+      ・<b style="color:#1f8a4c;">上振れ(プラス)</b> ＝ 見込みより高く売れた。悪いことではなく、<b>買取価格を抑えすぎて買い逃している</b>サインの可能性があります(もう少し高く買っても採算が合う)。<br>
+      ・<b style="color:#c0392b;">下振れ(マイナス)</b> ＝ 見込みより安く売れた。出品時の販売価格の付け方(相場の見立て)を見直す余地があります。<br>
+      ・対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。<br>
+      <span style="color:#7a5b1e;">※<b>販売価格</b>＝商品V2の「販売価格」＝<b>販売見込価格</b>のことです(実際に売れた金額ではありません)。実際に売れた金額は「落札価格」です。</span>
+    </div>
+  </div>
+
+  <p style="margin:0 0 14px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
+
+  <div class="kpi-grid" id="pvKpiGrid"></div>
 
   <div class="card insight-box" id="pvInsightBox">
     <h3>粗利差異の所見(自動生成)</h3>
@@ -637,7 +648,7 @@
   <div class="card table-section"><h3>コンディション別</h3><div id="pvCondTable"></div></div>
   <div class="card table-section"><h3>価格帯別</h3><div id="pvBandTable"></div></div>
   <div class="card table-section"><h3>拠点別</h3><div id="detailTablePvLocation" class="detail-table"></div></div>
-  <div class="card table-section"><h3>カテゴリ別</h3><div id="pvCatTable"></div></div>
+  <div class="card table-section"><h3>カテゴリ別 <span class="badge">列見出しクリックで並び替え / 横スクロール可(カテゴリ列は固定)</span></h3><div id="pvCatTable" class="wide-table"></div></div>
   <p class="note">カテゴリ別の表は、以前の「カテゴリ別」「カテゴリ別 詳細」「カテゴリ別 詳細粗利指標」の3つを1つにまとめたものです(2026-09-28)。列の意味: 対象商品数=出荷点数 / 上振れ・下振れ=見込みに対する実績の上下 / 差引金額=粗利差異の合計 / 見込み粗利=販売価格-買取価格(税抜) / 実粗利=落札価格-買取価格(税抜) / 仕入額=買取価格(税抜)合計 / 売上額=落札価格合計 / 粗利額=実粗利合計 / 粗利率=粗利額÷売上額 / 平均リード=買取日→落札日の平均日数 / 販売単価=売上額÷数量 / 粗利単価=粗利額÷数量。</p>
 
 
@@ -665,9 +676,6 @@
 
   <!-- E項目: ⑧赤字ページの絞り込み。拠点は共通の拠点セレクタ(locFilter。「全拠点」を含む)を使い、
        カテゴリはこのページ専用の複数選択セレクタを使う。④・⑤ページと違い「未選択=全カテゴリ」。 -->
-  <p style="margin:0 0 12px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
-  <p class="drill-title" id="deficitDrillTitle">全拠点 × 全カテゴリ</p>
-
   <!-- 2026-09-28: 「損益の見方」セレクタは廃止し、⑧=粗利損 / ⑨=最終利益 の2ページに分けた。
        既存の集計コードがこの値を読むので、要素自体は非表示のまま残してページ切替時に設定する。 -->
   <select id="deficitMode" style="display:none;">
@@ -675,10 +683,21 @@
     <option value="fin" selected>最終利益(粗利-返品時の発送送料/1.1-返送料/1.1)</option>
   </select>
 
-  <div class="card" id="deficitDefBox" style="margin:0 0 14px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>カテゴリ(複数選択可。Ctrl/Cmd(Macは⌘)+クリックで複数選択すると合算表示します。未選択=全カテゴリ)</label>
+      <select id="deficitCatMultiSelect" multiple size="6" style="min-width:240px;"></select>
+    </div>
+  </div>
+
+  <div class="card" id="deficitDefBox" style="margin:0 0 10px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
     <h3 style="margin:0 0 6px;font-size:14px;color:#7a5b1e;" id="deficitDefTitle">原価割れとは</h3>
     <div style="font-size:12.5px;line-height:1.7;color:#3c4250;" id="deficitDefBody"></div>
   </div>
+
+  <p style="margin:0 0 14px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
+
+  <p class="drill-title" id="deficitDrillTitle">全拠点 × 全カテゴリ</p>
 
   <div class="kpi-grid" id="deficitModeKpi"></div>
 
@@ -688,14 +707,6 @@
     <div class="insight-text" id="deficitInsightText"></div>
   </div>
 
-  <div class="controls" style="margin-bottom:14px;">
-    <div class="ctl">
-      <label>カテゴリ(複数選択可。Ctrl/Cmd(Macは⌘)+クリックで複数選択すると合算表示します。未選択=全カテゴリ)</label>
-      <select id="deficitCatMultiSelect" multiple size="6" style="min-width:240px;"></select>
-    </div>
-  </div>
-
-  <div class="kpi-grid" id="deficitKpiGrid"></div>
 
   <!-- F項目: 「カテゴリ別 赤字比較」を「推移」より前に表示する -->
   <h2>カテゴリ別 赤字比較 <span id="deficitCatPeriodLabel" class="badge"></span></h2>
@@ -3829,16 +3840,9 @@ function renderDeficitKPIs() {
   if (titleEl) titleEl.textContent = locLabel + '  ×  カテゴリ: ' + catLabel;
   const trendHeading = document.getElementById('deficitTrendHeading');
   if (trendHeading) trendHeading.textContent = '推移(' + locLabel + ' / ' + catLabel + ')';
-  const agg = computeAggGeneric(DEFICIT_ROWS, DEFICIT_FIELDS, granularity, periodKey, rowFilter);
-  const avg = agg.count ? agg.total_deficit / agg.count : null;
-  const html = [
-    metricSimpleCardHtml('赤字商品数', fmtInt(agg.count)),
-    metricSimpleCardHtml('赤字額合計', fmtYen(agg.total_deficit)),
-    metricSimpleCardHtml('1品あたり赤字額', avg === null ? '-' : fmtYen(avg)),
-    metricSimpleCardHtml('発送送料合計', fmtYen(agg.shipping_fee_total)),
-    metricSimpleCardHtml('SR返品送料合計', fmtYen(agg.return_shipping_total))
-  ].join('');
-  document.getElementById('deficitKpiGrid').innerHTML = html;
+  // 2026-09-28: 2つ目のKPIグリッドは廃止し、上のKPIに統合した。重複していた
+  // 赤字点数・赤字額・1点あたり赤字は削除し、重複しない送料2枚は renderDeficitModeKPIs へ移した。
+  // この関数は見出し(拠点×カテゴリ・推移のタイトル)の更新だけを担う。
 }
 
 function renderDeficitCategorySection() {
@@ -3970,6 +3974,9 @@ function renderDeficitModeSummary() {
       fmtYen((t.lost_shipping_total || 0) + (t.return_shipping_total || 0))));
     cards.push(metricSimpleCardHtml('返品で赤字に転じた点数', fmtInt(extra) + '点'));
   }
+  // 旧「2つ目のKPI」から、重複しない送料の2枚だけを引き継ぐ(2026-09-28)
+  cards.push(metricSimpleCardHtml('発送送料合計', fmtYen(t.shipping_fee_total)));
+  if (isFin) cards.push(metricSimpleCardHtml('SR返品送料合計', fmtYen(t.return_shipping_total)));
   cards.push(metricSimpleCardHtml('利益合計(' + modeName + ')', fmtYen(isFin ? t.fin_profit_sum : t.acc_profit_sum)));
   el.innerHTML = cards.join('');
 }
@@ -6300,11 +6307,11 @@ let deficitLocInitialized = false;
 // ページ固有ブロック(雑損/人の手間)の出し分けだけを切り替える。集計ロジックは共通。
 const DEFICIT_DEF_HTML = {
   deficit: '<b>原価割れ＝「売値が仕入れを下回った商品」</b>。<br>' +
-    '　判定式 ＝ <b>落札価格 - 買取価格(税抜) - 発送送料</b> が 0 未満<br>' +
-    '・仕入れた値段より安くしか売れなかった商品です。返品が発生していた場合は、その返送料も赤字額に上乗せしています。<br>' +
-    '・金額はすべて税抜です(買取価格・返送料は元データが税込のため ÷1.1)。<br>' +
+    '　判定式 ＝ <b>落札価格 - 買取価格(税抜)</b> が 0 未満<br>' +
+    '・仕入れた値段より安くしか売れなかった商品です。<b>送料は含めません</b>(仕入と売値の差だけを見ます)。<br>' +
+    '・金額は税抜です(買取価格は元データが税込のため ÷1.1)。<br>' +
     '・<b>赤字率</b>＝赤字商品数 ÷ 出荷商品数。<br>' +
-    '・返金や返品にともなう費用まで含めた損益は<b>⑨最終利益</b>のページで見られます。',
+    '・送料や返品にともなう費用まで含めた損益は<b>⑨最終利益</b>のページで見られます。',
   finprofit: '<b>最終利益＝粗利から、返品にかかった費用まで差し引いた利益</b>。<br>' +
     '　判定式 ＝ <b>粗利(落札価格 - 買取価格/1.1) - 返品時の発送送料/1.1 - 返送料/1.1</b> が 0 未満<br>' +
     '・返品が起きると、行きの送料も帰りの返送料も当社負担になるため、粗利が出ていても最終的に赤字になることがあります。<br>' +
@@ -6476,7 +6483,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/28 11:53 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/28 12:36 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
