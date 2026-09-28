@@ -120,8 +120,9 @@
   <button class="page-nav-btn" id="navBtnPriceBand" type="button">⑥ 価格帯</button>
   <button class="page-nav-btn" id="navBtnProfitVariance" type="button">⑦ 粗利差異</button>
   <button class="page-nav-btn" id="navBtnDeficit" type="button">⑧ 赤字(原価割れ)</button>
-  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑨ SRリピーター・ロイヤルカスタマー</button>
-  <button class="page-nav-btn" id="navBtnCancel" type="button">⑩ キャンセル状況</button>
+  <button class="page-nav-btn" id="navBtnFinalProfit" type="button">⑨ 最終利益</button>
+  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑩ SRリピーター・ロイヤルカスタマー</button>
+  <button class="page-nav-btn" id="navBtnCancel" type="button">⑪ キャンセル状況</button>
 </div>
 
 <div class="controls" id="globalControls">
@@ -575,6 +576,17 @@
 
   <p style="margin:0 0 12px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
 
+  <div class="card" style="margin:0 0 14px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
+    <h3 style="margin:0 0 6px;font-size:14px;color:#7a5b1e;">粗利差異とは</h3>
+    <div style="font-size:12.5px;line-height:1.7;color:#3c4250;">
+      <b>粗利差異 = 「実際」-「見込み」</b>。出品時に見込んでいた販売価格に対して、実際の落札価格がいくら上下したかを表します。<br>
+      　粗利差異 ＝ 実粗利(落札価格-買取価格/1.1) - 見込み粗利(販売価格-買取価格/1.1) ＝ <b>落札価格 - 販売価格</b><br>
+      ・<b style="color:#1f8a4c;">上振れ(プラス)</b> ＝ 見込みより高く売れた。悪いことではなく、<b>買取価格を抑えすぎて買い逃している</b>サインの可能性があります(もう少し高く買っても採算が合う)。<br>
+      ・<b style="color:#c0392b;">下振れ(マイナス)</b> ＝ 見込みより安く売れた。出品時の販売価格の付け方(相場の見立て)を見直す余地があります。<br>
+      ・期間は<b>買取日基準</b>です。対象は商品_出荷(JPONベース)の出荷済み商品(拠点はCSセンター・鳥取・北関東を除外)。
+    </div>
+  </div>
+
   <div class="kpi-grid" id="pvKpiGrid"></div>
 
   <div class="controls" style="margin-bottom:14px;">
@@ -610,34 +622,24 @@
     <div class="card mini-chart-card"><canvas id="pvCondChart"></canvas></div>
     <div class="card mini-chart-card"><canvas id="pvBandChart"></canvas></div>
   </div>
-  <div class="card table-section"><h3>コンディション別</h3><div id="pvCondTable"></div></div>
-  <div class="card table-section"><h3>価格帯別</h3><div id="pvBandTable"></div></div>
-  <div class="card table-section"><h3>カテゴリ別</h3><div id="pvCatTable"></div></div>
 
   <h2>拠点別 粗利差異(件数・額) <span id="pvLocPeriodLabel" class="badge"></span></h2>
   <div class="card chart-card" style="height:300px;"><canvas id="pvLocChart"></canvas></div>
-  <div class="card table-section">
-    <h3>拠点別 詳細</h3>
-    <div id="detailTablePvLocation" class="detail-table"></div>
-  </div>
 
   <h2>カテゴリ別 粗利差異(件数・額) <span id="pvCatPeriodLabel" class="badge"></span></h2>
   <div class="card chart-card" style="height:300px;"><canvas id="pvCatChart"></canvas></div>
-  <div class="card table-section">
-    <h3>カテゴリ別 詳細</h3>
-    <div id="detailTablePvCategory" class="detail-table"></div>
-  </div>
-
-  <h2>カテゴリ別 詳細粗利指標(数量・仕入額・売上額・粗利額・粗利差異・リード・粗利率・単価) <span id="cpdPeriodLabel" class="badge"></span></h2>
   <div class="mini-charts-grid">
     <div class="card mini-chart-card"><h4>カテゴリ別 粗利率</h4><canvas id="cpdMarginChart"></canvas></div>
     <div class="card mini-chart-card"><h4>カテゴリ別 粗利単価</h4><canvas id="cpdProfitPriceChart"></canvas></div>
   </div>
-  <div class="card table-section">
-    <h3>カテゴリ別 詳細粗利指標</h3>
-    <div id="detailTableCategoryProfitDetail" class="detail-table"></div>
-  </div>
-  <p class="note">数量=出荷点数/仕入額=買取価格(税抜)合計/売上額=落札価格合計/粗利額=実粗利合計/粗利差異=variance合計/リード=買取日→落札日の平均日数/粗利率=粗利額÷売上額/販売単価=売上額÷数量/粗利単価=粗利額÷数量。対象は商品_出荷(JPONベース)(拠点はCSセンター・鳥取・北関東を除外、20期・21期の全期間分)。</p>
+
+  <h2>明細表 <span id="cpdPeriodLabel" class="badge"></span></h2>
+  <div class="card table-section"><h3>コンディション別</h3><div id="pvCondTable"></div></div>
+  <div class="card table-section"><h3>価格帯別</h3><div id="pvBandTable"></div></div>
+  <div class="card table-section"><h3>拠点別</h3><div id="detailTablePvLocation" class="detail-table"></div></div>
+  <div class="card table-section"><h3>カテゴリ別</h3><div id="pvCatTable"></div></div>
+  <p class="note">カテゴリ別の表は、以前の「カテゴリ別」「カテゴリ別 詳細」「カテゴリ別 詳細粗利指標」の3つを1つにまとめたものです(2026-09-28)。列の意味: 対象商品数=出荷点数 / 上振れ・下振れ=見込みに対する実績の上下 / 差引金額=粗利差異の合計 / 見込み粗利=販売価格-買取価格(税抜) / 実粗利=落札価格-買取価格(税抜) / 仕入額=買取価格(税抜)合計 / 売上額=落札価格合計 / 粗利額=実粗利合計 / 粗利率=粗利額÷売上額 / 平均リード=買取日→落札日の平均日数 / 販売単価=売上額÷数量 / 粗利単価=粗利額÷数量。</p>
+
 
   <h2>カテゴリ別 詳細粗利指標の推移(カテゴリ選択・合計/平均) <span id="cpdTrendPeriodLabel" class="badge"></span></h2>
   <div class="controls" style="margin-bottom:14px;">
@@ -666,20 +668,22 @@
   <p style="margin:0 0 12px;padding:8px 12px;background:#f2f6ff;border-left:3px solid #2455c9;font-size:12px;color:#33425c;border-radius:4px;">このページの期間は<strong>買取日基準</strong>です（商品_出荷(JPONベース)の「買取」列）。①〜④の出荷指標や⑤コンディション・⑥価格帯は出荷予定日基準なので、同じ期間で比べると件数がずれます。</p>
   <p class="drill-title" id="deficitDrillTitle">全拠点 × 全カテゴリ</p>
 
-  <div class="controls" style="margin-bottom:14px;">
-    <div class="ctl">
-      <label>損益の見方</label>
-      <select id="deficitMode">
-        <option value="acc">粗利損(落札価格-買取価格/1.1)</option>
-        <option value="fin" selected>最終利益(粗利-返品時の発送送料/1.1-返送料/1.1)</option>
-      </select>
-    </div>
+  <!-- 2026-09-28: 「損益の見方」セレクタは廃止し、⑧=粗利損 / ⑨=最終利益 の2ページに分けた。
+       既存の集計コードがこの値を読むので、要素自体は非表示のまま残してページ切替時に設定する。 -->
+  <select id="deficitMode" style="display:none;">
+    <option value="acc">粗利損(落札価格-買取価格/1.1)</option>
+    <option value="fin" selected>最終利益(粗利-返品時の発送送料/1.1-返送料/1.1)</option>
+  </select>
+
+  <div class="card" id="deficitDefBox" style="margin:0 0 14px;padding:12px 14px;background:#fffdf3;border-left:4px solid #d9a441;">
+    <h3 style="margin:0 0 6px;font-size:14px;color:#7a5b1e;" id="deficitDefTitle">原価割れとは</h3>
+    <div style="font-size:12.5px;line-height:1.7;color:#3c4250;" id="deficitDefBody"></div>
   </div>
 
   <div class="kpi-grid" id="deficitModeKpi"></div>
 
   <div class="card insight-box" id="deficitInsightBox">
-    <h3>赤字(原価割れ)の所見(自動生成)</h3>
+    <h3 id="deficitInsightHeading">赤字(原価割れ)の所見(自動生成)</h3>
     <div class="insight-meta" id="deficitInsightMeta"></div>
     <div class="insight-text" id="deficitInsightText"></div>
   </div>
@@ -697,6 +701,12 @@
   <h2>カテゴリ別 赤字比較 <span id="deficitCatPeriodLabel" class="badge"></span></h2>
   <div class="card chart-card" style="height:300px;"><canvas id="deficitCatChart"></canvas></div>
 
+  <div class="card table-section">
+    <h3>カテゴリ別 詳細 <span class="badge">カテゴリ名をクリックすると、すぐ下に商品明細が開きます</span></h3>
+    <div id="detailTableDeficitCategory" class="detail-table"></div>
+  </div>
+
+  <!-- 2026-09-28: 商品明細は「カテゴリ別 詳細」の表の下に表示する(以前は表の上だった) -->
   <details class="card insight-box" id="deficitItemBox" style="display:none;" open>
     <summary style="cursor:pointer;font-weight:700;color:#1c2b4a;font-size:15px;list-style:revert;">
       <span id="deficitItemTitle">カテゴリの商品明細</span>
@@ -704,13 +714,8 @@
     </summary>
     <div class="insight-meta" style="margin-top:8px;" id="deficitItemSummary"></div>
     <div id="deficitItemTable" class="detail-table" style="margin-top:8px;"></div>
-    <p class="note">表示対象は「赤字だった商品」と「SRが発生した商品」です。金額はすべて税抜です(販売価格・買取価格・返送料は元データが税込のため÷1.1)。見込差＝落札価格−見込販売価格で、マイナスなら見込より安く売れたことを意味します。検索欄でコンディション・買取者・SR分類などの絞り込みができます。</p>
+    <p class="note">表示対象は「赤字だった商品」と「SRが発生した商品」です。金額はすべて税抜です(販売価格・買取価格・返送料は元データが税込のため÷1.1)。見込差＝落札価格−見込販売価格で、マイナスなら見込より安く売れたことを意味します。<b>商品IDをクリックすると商品V2の該当ページが別タブで開きます。</b>検索欄でコンディション・買取者・SR分類などの絞り込みができます。</p>
   </details>
-
-  <div class="card table-section">
-    <h3>カテゴリ別 詳細 <span class="badge">カテゴリ名をクリックすると商品明細が開きます</span></h3>
-    <div id="detailTableDeficitCategory" class="detail-table"></div>
-  </div>
 
   <h2 id="deficitTrendHeading">推移(全社合計)</h2>
   <div class="card chart-card" style="height:300px;"><canvas id="deficitTrendChart"></canvas></div>
@@ -739,11 +744,12 @@
   </div>
   <div class="card table-section">
     <div id="deficitCrossTable" style="overflow-x:auto;"></div>
-    <p class="note">上部の「損益の見方」(粗利損／最終利益)と、拠点・カテゴリ・期間の絞り込みがそのまま反映されます。色が濃いほど値が大きい(＝悪い)ことを示します。セルにマウスを乗せると出荷点数・赤字点数・赤字額が表示されます。出荷点数の多い順に上位15カテゴリを表示しています。</p>
+    <p class="note">このページの損益の見方(⑧=粗利損／⑨=最終利益)と、拠点・カテゴリ・期間の絞り込みがそのまま反映されます。色が濃いほど値が大きい(＝悪い)ことを示します。セルにマウスを乗せると出荷点数・赤字点数・赤字額が表示されます。出荷点数の多い順に上位15カテゴリを表示しています。</p>
   </div>
 
   <!-- 雑損: 返品されたが再販不可と判断され、商品V2で「雑損」ステータスになった商品。
        売上が立たず買取価格がまるごと損失になるため、赤字商品とは別枠で集計する。 -->
+  <div id="writeoffSection">
   <h2>雑損(再販不可) <span id="writeoffPeriodLabel" class="badge"></span></h2>
   <div class="kpi-grid" id="writeoffKpi"></div>
   <div class="card chart-card" style="height:300px;"><canvas id="writeoffTrendChart"></canvas></div>
@@ -758,8 +764,9 @@
     </div>
   </div>
   <p class="note">返品された商品のうち、再販できないと判断されて商品V2で「雑損」ステータスになったものです。売上が立たないため<b>買取価格がそのまま損失</b>になります(金額は税抜)。上の赤字(原価割れ)は「売れたが利益が出なかった商品」なので、雑損とは別の損失です。期間キーは他ページと同じ出荷日基準です。</p>
+  </div>
 
-  <div class="card insight-box" style="background:#fff8ec;border-color:#f0dfb8;">
+  <div class="card insight-box" id="laborCostBox" style="background:#fff8ec;border-color:#f0dfb8;">
     <h3 style="color:#7a5b1e;">この表に入っていない「人の手間」のコスト</h3>
     <div class="insight-text" style="color:#4a3c1e;">
 金額だけを見ると赤字でなくても、SRが起きた商品には作業時間という見えないコストがかかっています。1点あたりの目安は次のとおりです。
@@ -774,7 +781,7 @@
     </div>
   </div>
 
-  <p class="note" id="deficitNote">損益の2つの見方: <b>粗利損</b>＝落札価格-買取価格/1.1 がマイナスになったもの（仕入と売価の差だけを見る）。<b>最終利益</b>＝粗利-返送料/1.1 がマイナスになったもの（返品時の返送料は当社負担のため差し引く）。上部のセレクタで切り替えられます。<br>
+  <p class="note" id="deficitNote">損益の2つの見方は<b>ページで分かれています</b>(2026-09-28)。<b>⑧赤字(原価割れ)</b>＝落札価格-買取価格/1.1 がマイナスになったもの（仕入と売価の差だけを見る）。<b>⑨最終利益</b>＝粗利-返送料/1.1 がマイナスになったもの（返品時の返送料は当社負担のため差し引く）。<br>
   ・<b>発送時の送料は差し引いていません</b>。お客様からお預かりした送料をそのまま配送業者に支払うため当社の持ち出しにならず、返品時もお客様に返金されるためです（厳密には契約送料との差額が利益になりますが、ここでは利益として考慮していません）。<br>
   ・返品→再出品→再販が同じ期間内に起きた場合、落札価格は<b>最終的に売れた価格</b>を採用します。<br>
   ・例）買取10,000円・最終落札13,000円の場合 → 粗利損の判定=13,000-9,091=3,909円（プラスなので赤字ではない）。返品が発生していれば、さらに返送料(税抜)を差し引いた額で判定します。<br>
@@ -1577,6 +1584,9 @@ const NUM_FIELDS = [
 function emptyAgg() { const o = {}; for (let i = 0; i < NUM_FIELDS.length; i++) o[NUM_FIELDS[i]] = 0; return o; }
 function addInto(agg, row) { for (let i = 0; i < NUM_FIELDS.length; i++) { const f = NUM_FIELDS[i]; const v = row[f]; if (v) agg[f] += v; } }
 
+// 同じ(行配列 × 粒度 × 期間)の絞り込みが1回の描画で何十回も走るため、結果を使い回す。
+// 絞り込み条件も返す配列の中身も従来と同一(filterの結果をそのまま保持しているだけ)。
+// 週の起点・基準日を変えたときは clearPerfCaches() で捨てる。
 let _periodRowsCache = new WeakMap();
 function rowsForPeriod(rowsArr, granularity, periodKey) {
   if (periodKey === '__ALL__') return rowsArr;
@@ -3192,7 +3202,7 @@ function renderProfitVarianceKPIs() {
   const granularity = granSel.value, periodKey = periodSel.value;
   const agg = computeAggGeneric(PROFIT_VARIANCE_ROWS, PV_FIELDS, granularity, periodKey, pvDimFilter());
   const html = [
-    metricSimpleCardHtml('件数(合計)', fmtInt(agg.count)),
+    metricSimpleCardHtml('対象商品数(買取日基準)', fmtInt(agg.count)),
     metricSimpleCardHtml('上振れ 件数・額', fmtInt(agg.upside_count) + '件<br>' + fmtYen(agg.upside_amount)),
     metricSimpleCardHtml('下振れ 件数・額', fmtInt(agg.downside_count) + '件<br>' + fmtYen(agg.downside_amount)),
     metricSimpleCardHtml('差異合計額', fmtYen(agg.variance_sum)),
@@ -3237,7 +3247,7 @@ function renderProfitVarianceCategorySection() {
   let data = buildDimBreakdownGeneric(PROFIT_VARIANCE_ROWS, 'category', PV_FIELDS, granularity, periodKey, pvDimFilter({ skipCat: true }));
   data.sort((a, b) => b.count - a.count);
   renderChart('pvCatChart', pvTrendConfig(data.map(d => d.name), data.map(d => d.upside_amount), data.map(d => d.downside_amount), data.map(d => d.variance_sum)));
-  renderSimpleTableInto('detailTablePvCategory', PV_COLUMNS('カテゴリ'), data.map(pvRow), 20);
+  // 「カテゴリ別 詳細」表は「カテゴリ別」表に統合したので、ここでは描画しない(2026-09-28)
 }
 
 // ---------- カテゴリ別詳細粗利指標(⑦ページ内に追加するセクション) ----------
@@ -3308,26 +3318,7 @@ function renderCategoryProfitDetailSection() {
       upDown.set(r.category, o);
     });
 
-  renderSimpleTableInto('detailTableCategoryProfitDetail', [
-    { name: 'カテゴリ' },
-    { name: '数量', formatter: c => fmtInt(c) },
-    { name: '仕入額(円)', formatter: c => fmtYen(c) },
-    { name: '売上額(円)', formatter: c => fmtYen(c) },
-    { name: '粗利額(円)', formatter: c => fmtYen(c) },
-    { name: '粗利差異(円)', formatter: c => fmtYen(c) },
-    { name: '上振れ率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
-    { name: '下振れ率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
-    { name: '平均リード(日)', formatter: c => (c === null || c === undefined) ? '-' : c.toFixed(1) },
-    { name: '粗利率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
-    { name: '販売単価(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) },
-    { name: '粗利単価(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) }
-  ], data.map(d => {
-    const ud = upDown.get(d.name);
-    const upRate = ud && ud.count ? ud.up / ud.count : null;
-    const downRate = ud && ud.count ? ud.down / ud.count : null;
-    return [d.name, d.count, d.cost_amount, d.sales_amount, d.gross_profit, d.variance_amount,
-      upRate, downRate, d.avg_lead_days, d.margin_rate, d.avg_sale_price, d.avg_profit_price];
-  }), 20);
+  // 「カテゴリ別 詳細粗利指標」表は「カテゴリ別」表に統合したので、ここでは描画しない(2026-09-28)
 }
 
 // F項目: カテゴリを選択(複数選択可)し、選択したカテゴリの「合計」「平均」それぞれの
@@ -3507,10 +3498,11 @@ function renderPvInsight() {
     t.downside_count += r.downside_count || 0; t.downside_amount += r.downside_amount || 0;
     t.expected += r.expected_profit_sum || 0; t.actual += r.actual_profit_sum || 0;
     for (const [map, key] of [[byLoc, r.location], [byCat, r.category]]) {
-      if (!map.has(key)) map.set(key, { count: 0, variance: 0, down: 0, downAmt: 0 });
+      if (!map.has(key)) map.set(key, { count: 0, variance: 0, down: 0, downAmt: 0, up: 0, upAmt: 0 });
       const o = map.get(key);
       o.count += r.count || 0; o.variance += r.variance_sum || 0;
       o.down += r.downside_count || 0; o.downAmt += r.downside_amount || 0;
+      o.up += r.upside_count || 0; o.upAmt += r.upside_amount || 0;
     }
   });
   const el = document.getElementById('pvInsightText');
@@ -3525,17 +3517,26 @@ function renderPvInsight() {
              '。差引の粗利差異は' + fmtYen(t.variance_sum) + 'です。');
   lines.push('見込み粗利' + fmtYen(t.expected) + 'に対し実績は' + fmtYen(t.actual) + 'で、達成率は' +
              (t.expected ? (t.actual / t.expected * 100).toFixed(1) : '-') + '%。');
-  const rank = (map, unit) => Array.from(map.entries()).filter(([k, o]) => o.count >= 30).sort((a, b) => a[1].variance - b[1].variance);
+  lines.push(t.variance_sum >= 0
+    ? '差引はプラスなので、全体としては見込みより高く売れています。相場に対して買取価格を抑えめに見積もっている可能性があり、買取単価を上げる余地があるかを検討できます。'
+    : '差引はマイナスなので、全体として見込んだ販売価格に届いていません。出品時の価格設定の見立てを見直す余地があります。');
+  // 2026-09-28: 差異の符号を無視して「最大のマイナス」と書いてしまう誤りを修正。
+  // 上振れ(プラス)は悪いことではなく「買取価格を抑えすぎて買い逃している」可能性を示すので、
+  // 下振れ(マイナス)とは別の読み方を出す。
+  const rank = (map) => Array.from(map.entries()).filter(([k, o]) => o.count >= 30).sort((a, b) => a[1].variance - b[1].variance);
   const locRank = rank(byLoc), catRank = rank(byCat);
-  if (locRank.length) {
-    const [k, o] = locRank[0];
-    lines.push('拠点別で差異が最も大きいマイナスは「' + k + '」の' + fmtYen(o.variance) + '(対象' + fmtInt(o.count) + '点、うち下振れ' + fmtInt(o.down) + '点)。販売価格の設定基準を重点的に確認すべき拠点です。');
-    const best = locRank[locRank.length - 1];
-    if (best && best[0] !== k) lines.push('逆に「' + best[0] + '」は' + fmtYen(best[1].variance) + 'と最も良く、値付けが実勢に合っています。');
-  }
-  if (catRank.length) {
-    const [k, o] = catRank[0];
-    lines.push('カテゴリ別では「' + k + '」が' + fmtYen(o.variance) + 'と最大のマイナス(対象' + fmtInt(o.count) + '点)。相場変動が大きいカテゴリは、出品価格の見直し頻度を上げる余地があります。');
+  const 下振れ文 = (dim, k, o) => '【下振れ】' + dim + '別で見込みを最も下回っているのは「' + k + '」の' + fmtYen(o.variance) +
+      '(対象' + fmtInt(o.count) + '点、うち下振れ' + fmtInt(o.down) + '点)。見込んだ販売価格まで届いていないので、出品時の値付け基準(相場の見立て)を確認したい' + dim + 'です。';
+  const 上振れ文 = (dim, k, o) => '【上振れ】' + dim + '別で見込みを最も上回っているのは「' + k + '」の' + fmtYen(o.variance) +
+      '(対象' + fmtInt(o.count) + '点、うち上振れ' + fmtInt(o.up) + '点)。実際の落札額が見込みより高いということなので、' +
+      'この' + dim + 'は買取価格をもう少し出しても採算が合う可能性があります(安く見積もりすぎて買い逃しているかもしれません)。';
+  for (const [dim, rk] of [['拠点', locRank], ['カテゴリ', catRank]]) {
+    if (!rk.length) continue;
+    const worst = rk[0], best = rk[rk.length - 1];
+    if (worst[1].variance < 0) lines.push(下振れ文(dim, worst[0], worst[1]));
+    if (best[1].variance > 0 && best[0] !== worst[0]) lines.push(上振れ文(dim, best[0], best[1]));
+    if (worst[1].variance >= 0) lines.push('【' + dim + '】対象' + fmtInt(rk.length) + dim + 'すべてで差異がプラス(見込み以上に売れている)でした。下振れが目立つ' + dim + 'はありません。');
+    if (best[1].variance <= 0) lines.push('【' + dim + '】対象' + fmtInt(rk.length) + dim + 'すべてで差異がマイナスでした。全体的に見込み販売価格が強気すぎないか確認が必要です。');
   }
   el.textContent = lines.join('\n');
 }
@@ -3597,8 +3598,10 @@ function renderPvBreakdowns() {
     rowsArr.filter(st.rowFilter).forEach(r => {
       const k = r[dim];
       const o = map.get(k) || { count: 0, variance_sum: 0, upside_count: 0, upside_amount: 0,
-                                downside_count: 0, downside_amount: 0, sort: r.price_band_sort || 0 };
-      ['count', 'variance_sum', 'upside_count', 'upside_amount', 'downside_count', 'downside_amount']
+                                downside_count: 0, downside_amount: 0,
+                                expected_profit_sum: 0, actual_profit_sum: 0, sort: r.price_band_sort || 0 };
+      ['count', 'variance_sum', 'upside_count', 'upside_amount', 'downside_count', 'downside_amount',
+       'expected_profit_sum', 'actual_profit_sum']
         .forEach(f => o[f] += r[f] || 0);
       map.set(k, o);
     });
@@ -3672,12 +3675,60 @@ function renderPvBreakdowns() {
       scales: { y: { ticks: { callback: v => moneyTick(v) } } } }
   });
 
-  // カテゴリ別(既存の profit_variance_rows を流用)
+  // カテゴリ別(2026-09-28): 旧「カテゴリ別」「カテゴリ別 詳細」「カテゴリ別 詳細粗利指標」を1つに統合。
+  // 上振れ/下振れは profit_variance_rows、仕入額・売上額・粗利率などは category_profit_detail_rows から取る。
+  // どちらも同じ期間・同じ拠点/カテゴリの絞り込みが掛かった状態で突き合わせる。
   const catList = agg(PROFIT_VARIANCE_ROWS, 'category');
-  const catT = mkTable(catList, 'カテゴリ', (a, b) => Math.abs(pvPick(b[1], st.side).amt) - Math.abs(pvPick(a[1], st.side).amt));
-  // 「上振れのみ/下振れのみ」を選んだときは、その側の金額が大きい順に並べる
+  const cpdMap = new Map();
+  buildCategoryProfitDetailAgg(granSel.value, periodSel.value)
+    .filter(d => !st.useCat || st.catSet.has(d.name))
+    .forEach(d => cpdMap.set(d.name, d));
+  const catRows = catList.slice().sort((a, b) => Math.abs(pvPick(b[1], st.side).amt) - Math.abs(pvPick(a[1], st.side).amt));
+  const tt = { count: 0, upside_count: 0, upside_amount: 0, downside_count: 0, downside_amount: 0,
+               variance_sum: 0, expected_profit_sum: 0, actual_profit_sum: 0,
+               cost_amount: 0, sales_amount: 0, gross_profit: 0, lead_weighted: 0, lead_n: 0 };
+  const catLine = (k, o, d, opt) => {
+    const c = (v) => impCell(v, { num: 1, bg: opt && opt.bg, bold: opt && opt.bold });
+    const lead = d && d.avg_lead_days;
+    const margin = d && d.sales_amount ? d.gross_profit / d.sales_amount : null;
+    const salePrice = d && d.count ? d.sales_amount / d.count : null;
+    const profitPrice = d && d.count ? d.gross_profit / d.count : null;
+    return '<tr' + (opt && opt.total ? ' data-total="1"' : '') + '>' +
+      impCell(k, { bg: opt && opt.bg, bold: opt && opt.bold }) +
+      c(fmtInt(o.count)) +
+      c(fmtInt(o.upside_count)) + c(o.count ? fmtPct(o.upside_count / o.count) : '-') + c(fmtYen(o.upside_amount)) +
+      c(fmtInt(o.downside_count)) + c(o.count ? fmtPct(o.downside_count / o.count) : '-') + c(fmtYen(o.downside_amount)) +
+      c(fmtYen(o.variance_sum)) + c(o.count ? fmtYen(o.variance_sum / o.count) : '-') +
+      c(fmtYen(o.expected_profit_sum)) + c(fmtYen(o.actual_profit_sum)) +
+      c(d ? fmtYen(d.cost_amount) : '-') + c(d ? fmtYen(d.sales_amount) : '-') + c(d ? fmtYen(d.gross_profit) : '-') +
+      c(margin === null || margin === undefined ? '-' : fmtPct(margin)) +
+      c(lead === null || lead === undefined ? '-' : lead.toFixed(1)) +
+      c(salePrice === null || salePrice === undefined ? '-' : fmtYen(salePrice)) +
+      c(profitPrice === null || profitPrice === undefined ? '-' : fmtYen(profitPrice)) + '</tr>';
+  };
+  const catBody = catRows.map(([k, o]) => {
+    const d = cpdMap.get(k);
+    ['count', 'upside_count', 'upside_amount', 'downside_count', 'downside_amount',
+     'variance_sum', 'expected_profit_sum', 'actual_profit_sum'].forEach(f => tt[f] += o[f] || 0);
+    if (d) {
+      tt.cost_amount += d.cost_amount || 0; tt.sales_amount += d.sales_amount || 0;
+      tt.gross_profit += d.gross_profit || 0;
+      if (d.avg_lead_days !== null && d.avg_lead_days !== undefined) { tt.lead_weighted += d.avg_lead_days * (d.count || 0); tt.lead_n += d.count || 0; }
+    }
+    return catLine(k, o, d);
+  }).join('') + catLine('合計', tt,
+    { count: tt.count, cost_amount: tt.cost_amount, sales_amount: tt.sales_amount,
+      gross_profit: tt.gross_profit, avg_lead_days: tt.lead_n ? tt.lead_weighted / tt.lead_n : null },
+    { bg: '#eef1f5', bold: 1, total: 1 });
   const cte = document.getElementById('pvCatTable');
-  if (cte) cte.innerHTML = catT.html;
+  if (cte) cte.innerHTML = impTable([{ name: 'カテゴリ' }, { name: '対象商品数', num: 1 },
+    { name: '上振れ件数', num: 1 }, { name: '上振れ率', num: 1 }, { name: '上振れ金額', num: 1 },
+    { name: '下振れ件数', num: 1 }, { name: '下振れ率', num: 1 }, { name: '下振れ金額', num: 1 },
+    { name: '差引金額', num: 1 }, { name: '1件あたり差引', num: 1 },
+    { name: '見込み粗利', num: 1 }, { name: '実粗利', num: 1 },
+    { name: '仕入額', num: 1 }, { name: '売上額', num: 1 }, { name: '粗利額', num: 1 },
+    { name: '粗利率', num: 1 }, { name: '平均リード(日)', num: 1 },
+    { name: '販売単価', num: 1 }, { name: '粗利単価', num: 1 }], catBody);
 
   ['pvCondTable', 'pvBandTable', 'pvCatTable'].forEach(id => makeSortable(id, -1));
 }
@@ -3901,23 +3952,26 @@ function renderDeficitModeSummary() {
   const amt = isFin ? t.fin_deficit_amount : t.acc_deficit_amount;
   const modeName = isFin ? '最終利益' : '粗利損';
   const ship = t.shipped_count || 0;
-  el.innerHTML = [
+  // 2026-09-28: ⑧と⑨でページが分かれたので、そのページの見方のKPIだけを出す。
+  // 返品にともなう数字(返品点数・送料損失・返品で赤字化した点数)は最終利益の話なので⑨だけに置く。
+  const cards = [
     metricSimpleCardHtml('出荷商品数', fmtInt(ship) + '点'),
     metricSimpleCardHtml(modeName + 'ベースの赤字点数', fmtInt(cnt) + '点'),
     metricSimpleCardHtml('赤字率(赤字点数÷出荷点数)', ship ? fmtPct(cnt / ship) : '-'),
     metricSimpleCardHtml('赤字額(合計)', fmtYen(amt)),
     metricSimpleCardHtml('1点あたり赤字', cnt ? fmtYen(amt / cnt) : '-'),
-    metricSimpleCardHtml('赤字額÷出荷点数', ship ? fmtYen(amt / ship) : '-'),
-    metricSimpleCardHtml('粗利損: 点数 / 率', fmtInt(t.acc_deficit_count) + '点 / ' +
-      (ship ? fmtPct(t.acc_deficit_count / ship) : '-')),
-    metricSimpleCardHtml('最終利益: 点数 / 率', fmtInt(t.fin_deficit_count) + '点 / ' +
-      (ship ? fmtPct(t.fin_deficit_count / ship) : '-')),
-    metricSimpleCardHtml('返品点数', fmtInt(t.returned_count) + '点' +
-      (ship ? '（' + fmtPct((t.returned_count || 0) / ship) + '）' : '')),
-    metricSimpleCardHtml('返品分の送料損失(発送＋返送)',
-      fmtYen((t.lost_shipping_total || 0) + (t.return_shipping_total || 0))),
-    metricSimpleCardHtml('利益合計(' + modeName + ')', fmtYen(isFin ? t.fin_profit_sum : t.acc_profit_sum))
-  ].join('');
+    metricSimpleCardHtml('赤字額÷出荷点数', ship ? fmtYen(amt / ship) : '-')
+  ];
+  if (isFin) {
+    const extra = (t.fin_deficit_count || 0) - (t.acc_deficit_count || 0);
+    cards.push(metricSimpleCardHtml('返品点数', fmtInt(t.returned_count) + '点' +
+      (ship ? '（' + fmtPct((t.returned_count || 0) / ship) + '）' : '')));
+    cards.push(metricSimpleCardHtml('返品分の送料損失(発送＋返送)',
+      fmtYen((t.lost_shipping_total || 0) + (t.return_shipping_total || 0))));
+    cards.push(metricSimpleCardHtml('返品で赤字に転じた点数', fmtInt(extra) + '点'));
+  }
+  cards.push(metricSimpleCardHtml('利益合計(' + modeName + ')', fmtYen(isFin ? t.fin_profit_sum : t.acc_profit_sum)));
+  el.innerHTML = cards.join('');
 }
 
 // ⑦: カテゴリ × 仕入れ方法 のクロス集計表。
@@ -4016,9 +4070,19 @@ function renderDeficitCrossTab() {
 // 現在選択中の期間・拠点で絞り込み、そのカテゴリの商品を1行ずつ表示する。
 let deficitDrillCat = null;
 
+// 商品IDは商品V2の該当ページへのリンクにする(2026-09-28)。
+// 元データのIDに英字の接頭辞が付くことがあるため、URLには数字部分だけを渡す(§17の表記ゆれ対策)。
+function itemIdCell(c) {
+  const raw = (c === null || c === undefined) ? '' : String(c);
+  const num = raw.replace(/^[^0-9]+/, '');
+  if (!num) return raw;
+  return gridjs.html('<a href="https://v2.nrfc.jp/?v=itemFormIndex&item_id=' + encodeURIComponent(num) +
+    '" target="_blank" rel="noopener noreferrer">' + raw + '</a>');
+}
+
 const ITEM_DETAIL_COLUMNS = [
   { name: '出荷日' },
-  { name: '商品ID' },
+  { name: '商品ID', formatter: itemIdCell },
   { name: '拠点' },
   { name: '仕入れ方法' },
   { name: 'コンディション' },
@@ -6209,26 +6273,65 @@ function renderPageContent() {
   else if (currentPage === 'catdetail') renderCatDetailPage();
   else if (currentPage === 'condition') renderConditionPage();
   else if (currentPage === 'priceband') renderPriceBandPage();
-  else if (currentPage === 'deficit') renderDeficitPage();
+  else if (isDeficitPage(currentPage)) renderDeficitPage();
   else if (currentPage === 'customer') renderCustomerPage();
   else if (currentPage === 'cancel') renderCancelPage();
   else renderProfitVariancePage();
 }
 
-const ALL_PAGES = ['overall', 'allcategory', 'catdetail', 'condition', 'priceband', 'profitvariance', 'deficit', 'customer', 'cancel'];
+const ALL_PAGES = ['overall', 'allcategory', 'catdetail', 'condition', 'priceband', 'profitvariance', 'deficit', 'finprofit', 'customer', 'cancel'];
 const PAGE_NAV_MAP = {
   overall: 'navBtnOverall', allcategory: 'navBtnAllCategory', catdetail: 'navBtnCatDetail',
   condition: 'navBtnCondition', priceband: 'navBtnPriceBand',
-  profitvariance: 'navBtnProfitVariance', deficit: 'navBtnDeficit', customer: 'navBtnCustomer',
-  cancel: 'navBtnCancel'
+  profitvariance: 'navBtnProfitVariance', deficit: 'navBtnDeficit', finprofit: 'navBtnFinalProfit',
+  customer: 'navBtnCustomer', cancel: 'navBtnCancel'
 };
+// 2026-09-28: ⑧赤字(粗利損)と⑨最終利益は同じDOM・同じ集計コードで、「損益の見方」だけが違う。
+// 以前は1ページ内のセレクタで切り替えていたが、別ページに分けた(セレクタは廃止)。
+const PAGE_DOM_MAP = { finprofit: 'page-deficit' };
+function pageDomId(p) { return PAGE_DOM_MAP[p] || ('page-' + p); }
+const DEFICIT_PAGES = ['deficit', 'finprofit'];
+function isDeficitPage(p) { return DEFICIT_PAGES.indexOf(p) >= 0; }
 
 // ⑧赤字ページを一度でも表示したか(初回表示時のみ拠点を「全拠点」に初期化するためのフラグ)
 let deficitLocInitialized = false;
 
+// 2026-09-28: ⑧赤字(粗利損)と⑨最終利益はDOMを共有し、ここで「損益の見方」と見出し・
+// ページ固有ブロック(雑損/人の手間)の出し分けだけを切り替える。集計ロジックは共通。
+const DEFICIT_DEF_HTML = {
+  deficit: '<b>原価割れ＝「売値が仕入れを下回った商品」</b>。<br>' +
+    '　判定式 ＝ <b>落札価格 - 買取価格(税抜) - 発送送料</b> が 0 未満<br>' +
+    '・仕入れた値段より安くしか売れなかった商品です。返品が発生していた場合は、その返送料も赤字額に上乗せしています。<br>' +
+    '・金額はすべて税抜です(買取価格・返送料は元データが税込のため ÷1.1)。<br>' +
+    '・<b>赤字率</b>＝赤字商品数 ÷ 出荷商品数。<br>' +
+    '・返金や返品にともなう費用まで含めた損益は<b>⑨最終利益</b>のページで見られます。',
+  finprofit: '<b>最終利益＝粗利から、返品にかかった費用まで差し引いた利益</b>。<br>' +
+    '　判定式 ＝ <b>粗利(落札価格 - 買取価格/1.1) - 返品時の発送送料/1.1 - 返送料/1.1</b> が 0 未満<br>' +
+    '・返品が起きると、行きの送料も帰りの返送料も当社負担になるため、粗利が出ていても最終的に赤字になることがあります。<br>' +
+    '・金額はすべて税抜です。<br>' +
+    '・仕入れと売値の差だけを見たい場合は<b>⑧赤字(原価割れ)</b>のページをご覧ください。'
+};
+function applyDeficitPageMode(page) {
+  const fin = (page === 'finprofit');
+  const sel = document.getElementById('deficitMode');
+  if (sel) sel.value = fin ? 'fin' : 'acc';
+  const t = document.getElementById('deficitDefTitle');
+  if (t) t.textContent = fin ? '最終利益とは' : '原価割れとは';
+  const b = document.getElementById('deficitDefBody');
+  if (b) b.innerHTML = DEFICIT_DEF_HTML[fin ? 'finprofit' : 'deficit'];
+  const h = document.getElementById('deficitInsightHeading');
+  if (h) h.textContent = fin ? '最終利益がマイナスの商品の所見(自動生成)' : '赤字(原価割れ)の所見(自動生成)';
+  // 雑損は「売れなかった損失」なので⑧に、人の手間は最終的な利益の話なので⑨に置く
+  const w = document.getElementById('writeoffSection');
+  if (w) w.style.display = fin ? 'none' : '';
+  const l = document.getElementById('laborCostBox');
+  if (l) l.style.display = fin ? '' : 'none';
+}
+applyDeficitPageMode('deficit');   // 初期表示(setPageを通らない)でも定義ボックスを埋めておく
+
 // 期間・拠点セレクタの表示条件。初期表示(setPageを通らない)でも使うので関数にしてある。
 function syncCtlVisibility(page) {
-  ctlLoc.classList.toggle('visible', page === 'overall' || page === 'catdetail' || page === 'deficit' ||
+  ctlLoc.classList.toggle('visible', page === 'overall' || page === 'catdetail' || isDeficitPage(page) ||
     page === 'condition' || page === 'priceband' || page === 'profitvariance');
   const gc = document.getElementById('globalControls');
   if (gc) gc.style.display = (page === 'customer' || page === 'cancel') ? 'none' : '';
@@ -6237,8 +6340,10 @@ function syncCtlVisibility(page) {
 
 function setPage(page) {
   currentPage = page;
-  Object.keys(PAGE_NAV_MAP).forEach(p => document.getElementById(PAGE_NAV_MAP[p]).classList.toggle('active', p === page));
-  ALL_PAGES.forEach(p => document.getElementById('page-' + p).classList.toggle('active', p === page));
+  Object.keys(PAGE_NAV_MAP).forEach(p => { const b = document.getElementById(PAGE_NAV_MAP[p]); if (b) b.classList.toggle('active', p === page); });
+  const wantDom = pageDomId(page);
+  ALL_PAGES.forEach(p => { const el = document.getElementById(pageDomId(p)); if (el) el.classList.toggle('active', pageDomId(p) === wantDom); });
+  applyDeficitPageMode(page);
   // E項目: ⑧赤字ページでも拠点セレクタを使えるようにする
   syncCtlVisibility(page);
   // ②拠点別は1拠点ドリルダウン専用なので、従来どおり「全拠点」が選ばれていたら実在の拠点に戻す。
@@ -6342,7 +6447,7 @@ locSel.addEventListener('change', () => {
 }
 if (detailCatMultiSel) detailCatMultiSel.addEventListener('change', () => { if (currentPage === 'detail') renderPageContent(); });
 
-if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
+if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if (isDeficitPage(currentPage)) renderPageContent(); });
 {
   // ①ページで追加したセレクタ。該当セクションだけを描き直せばよい。
   const m = document.getElementById('ovLocYoyMetric');
@@ -6366,12 +6471,12 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
   if (dm) dm.addEventListener('change', () => { if (currentPage === 'deficit') renderPageContent(); });
   // クロス集計の指標切替は、その表だけを描き直せばよい
   const dx = document.getElementById('deficitCrossMetric');
-  if (dx) dx.addEventListener('change', () => { if (currentPage === 'deficit') renderDeficitCrossTab(); });
+  if (dx) dx.addEventListener('change', () => { if (isDeficitPage(currentPage)) renderDeficitCrossTab(); });
 }
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/28 01:13 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/28 11:53 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
