@@ -1261,7 +1261,10 @@ const CONDITION_ORDER = ['ジャンク(J)', '程度不良(D)', '一般中古(C)'
 const [FY_START_Y, FY_START_M] = DATA.fiscal_year_start.split('-').map(Number);
 const BASE_FY_NUM = parseInt(DATA.fiscal_year_label, 10);
 
+const _fiscalCache = new Map();
 function fiscalInfo(year_month) {
+  const _fh = _fiscalCache.get(year_month);
+  if (_fh !== undefined) return _fh;
   const [y, m] = year_month.split('-').map(Number);
   const monthsDiff = (y - FY_START_Y) * 12 + (m - FY_START_M);
   const fyIndex = Math.floor(monthsDiff / 12);
@@ -1269,7 +1272,9 @@ function fiscalInfo(year_month) {
   const quarter = Math.floor(monthInFY / 3) + 1;
   const half = monthInFY < 6 ? '上期' : '下期';
   const fyNum = BASE_FY_NUM + fyIndex;
-  return { fyNum, quarter, half, monthInFY, sortKey: fyIndex * 12 + monthInFY };
+  const _fr = { fyNum, quarter, half, monthInFY, sortKey: fyIndex * 12 + monthInFY };
+  _fiscalCache.set(year_month, _fr);
+  return _fr;
 }
 
 function fmtWeekLabel(ws, we) {
@@ -1314,7 +1319,16 @@ function weekBucketOf(ymd) {
 // (「全期間合計」を選んだ場合だけは従来どおり合算対象に含まれる)。
 const DAILY_FROM = DATA.daily_from || '9999-12-31';
 
+let _pkCache = new Map();
 function periodKeyFor(row, granularity) {
+  const _ck = granularity + '|' + row.year_month + '|' + row.week_start;
+  const _ph = _pkCache.get(_ck);
+  if (_ph !== undefined) return _ph;
+  const _pv = _periodKeyForRaw(row, granularity);
+  _pkCache.set(_ck, _pv);
+  return _pv;
+}
+function _periodKeyForRaw(row, granularity) {
   const fi = fiscalInfo(row.year_month);
   if (granularity === 'week') {
     if (row.week_start < DAILY_FROM) return { key: null, label: '', sort: '', fyNum: fi.fyNum };
@@ -1560,8 +1574,27 @@ const NUM_FIELDS = [
   'junk_shipped_count', 'junk_listed_count'
 ];
 
-function emptyAgg() { const o = {}; NUM_FIELDS.forEach(f => o[f] = 0); return o; }
-function addInto(agg, row) { NUM_FIELDS.forEach(f => agg[f] += (row[f] || 0)); }
+function emptyAgg() { const o = {}; for (let i = 0; i < NUM_FIELDS.length; i++) o[NUM_FIELDS[i]] = 0; return o; }
+function addInto(agg, row) { for (let i = 0; i < NUM_FIELDS.length; i++) { const f = NUM_FIELDS[i]; const v = row[f]; if (v) agg[f] += v; } }
+
+let _periodRowsCache = new WeakMap();
+function rowsForPeriod(rowsArr, granularity, periodKey) {
+  if (periodKey === '__ALL__') return rowsArr;
+  let byArr = _periodRowsCache.get(rowsArr);
+  if (!byArr) { byArr = new Map(); _periodRowsCache.set(rowsArr, byArr); }
+  const ck = granularity + '|' + periodKey;
+  let hit = byArr.get(ck);
+  if (hit === undefined) {
+    hit = rowsArr.filter(r => periodKeyFor(r, granularity).key === periodKey);
+    byArr.set(ck, hit);
+  }
+  return hit;
+}
+function clearPerfCaches() {
+  _weekBucketCache.clear();
+  _pkCache = new Map();
+  _periodRowsCache = new WeakMap();
+}
 
 function deriveRates(agg) {
   const final_profit = agg.gross_profit - agg.refund_amount - agg.return_shipping_cost;
@@ -1631,7 +1664,7 @@ function currentPeriodLabel() {
 
 // ---------- generic aggregation helpers (rowFilter is an optional function(row) => bool) ----------
 function computeAgg(granularity, periodKey, rowFilter) {
-  let rows = ROWS.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  let rows = rowsForPeriod(ROWS, granularity, periodKey);
   if (rowFilter) rows = rows.filter(rowFilter);
   const agg = emptyAgg();
   rows.forEach(r => addInto(agg, r));
@@ -1656,7 +1689,7 @@ function buildTrendAligned(granularity, rowFilter) {
 
 function buildBreakdown(granularity, axis, periodKey, rowFilter) {
   const dim = axis === 'location' ? 'location' : 'category';
-  let rows = ROWS.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  let rows = rowsForPeriod(ROWS, granularity, periodKey);
   if (rowFilter) rows = rows.filter(rowFilter);
   const map = new Map();
   rows.forEach(r => {
@@ -1674,7 +1707,7 @@ function buildBreakdown(granularity, axis, periodKey, rowFilter) {
 function sumFieldsInto(target, row, fields) { fields.forEach(f => target[f] = (target[f] || 0) + (row[f] || 0)); }
 
 function buildDimBreakdownGeneric(rowsArr, dim, fields, granularity, periodKey, rowFilter) {
-  let rows = rowsArr.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  let rows = rowsForPeriod(rowsArr, granularity, periodKey);
   if (rowFilter) rows = rows.filter(rowFilter);
   const map = new Map();
   rows.forEach(r => {
@@ -3109,7 +3142,7 @@ function metricSimpleCardHtml(title, mainText) {
 const PV_FIELDS = ['count', 'upside_count', 'upside_amount', 'downside_count', 'downside_amount', 'variance_sum', 'expected_profit_sum', 'actual_profit_sum'];
 
 function computeAggGeneric(rowsArr, fields, granularity, periodKey, rowFilter) {
-  let rows = rowsArr.filter(r => periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey);
+  let rows = rowsForPeriod(rowsArr, granularity, periodKey);
   if (rowFilter) rows = rows.filter(rowFilter);
   const agg = {};
   fields.forEach(f => agg[f] = 0);
@@ -6261,7 +6294,7 @@ granSel.addEventListener('change', () => { syncWeekStartVisibility(); populatePe
 if (weekStartSel) {
   weekStartSel.addEventListener('change', () => {
     WEEK_START_DOW = parseInt(weekStartSel.value, 10);
-    _weekBucketCache.clear();
+    clearPerfCaches();
     populatePeriodSelect();
     renderPageContent();
   });
@@ -6290,7 +6323,7 @@ function updateShipBasisNote() {
 if (shipBasisSel) {
   shipBasisSel.addEventListener('change', () => {
     ROWS = (shipBasisSel.value === 'listing') ? ROWS_LISTING : ROWS_SHIP;
-    _weekBucketCache.clear();
+    clearPerfCaches();
     const keep = periodSel.value;
     populatePeriodSelect();
     if (Array.prototype.some.call(periodSel.options, o => o.value === keep)) periodSel.value = keep;
