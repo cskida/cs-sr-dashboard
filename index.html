@@ -763,6 +763,14 @@
   <div id="writeoffSection">
   <h2>雑損(再販不可) <span id="writeoffPeriodLabel" class="badge"></span></h2>
   <div class="kpi-grid" id="writeoffKpi"></div>
+
+  <div class="card" style="margin:0 0 14px;padding:12px 14px;background:#f7f9fc;border-left:4px solid #2455c9;">
+    <h3 style="margin:0 0 6px;font-size:14px;color:#1c2b4a;">どこで問題が起きた雑損か(起因区分)</h3>
+    <div id="writeoffOriginKpi" class="kpi-grid" style="margin:0;"></div>
+    <p class="note" style="margin:8px 0 0;">申請シートの「雑損原因」から振り分けています。<b>販売起因(出荷後)</b>＝出品・出荷まで進んだあとに販売時の事故やSRで再販不可になったもの。<b>買取起因(出品前)</b>＝そもそも買取に問題があり、出品にも出せないと判断されたもの。<br>
+    実データでも裏が取れています。商品マスタ(商品_出荷／商品_出品待)に行が残っている率は「販売での佐川・アート過失」72.4%・「SR戻り」66.7%と高く、出荷まで進んだことが確認できます。一方「返却要望」0.5%・「商品紛失・棚卸差異」0%・「誤商品化」0%・「クーリングオフ」5.1%はほとんど残っておらず、出品前に落ちています。</p>
+  </div>
+
   <div class="card chart-card" style="height:300px;"><canvas id="writeoffTrendChart"></canvas></div>
   <div class="mini-charts-grid">
     <div class="card table-section">
@@ -773,6 +781,10 @@
       <h3>拠点別 雑損</h3>
       <div id="writeoffLocTable"></div>
     </div>
+  </div>
+  <div class="card table-section">
+    <h3>雑損原因別 <span class="badge">申請シートの「雑損原因」そのまま</span></h3>
+    <div id="writeoffReasonTable" class="wide-table"></div>
   </div>
   <p class="note"><b>雑損＝再販できないと判断され、雑損申請が出された商品です。</b>売上が立たないため<b>買取価格がそのまま損失</b>になります(金額は税抜)。上の赤字(原価割れ)は「売れたが利益が出なかった商品」なので、雑損とは別の損失です。<br>
   <b>2026-09-28に判定方法を変更しました。</b>以前は商品V2の進捗が「雑損」になっている商品だけを数えていましたが、ステータスの付け漏れで<b>2026年3月以降がまるごと抜け落ち、全期間で157件しか拾えていませんでした</b>。現在は<b>「【リユースカンパニー】雑損申請管理シート」の集約シートに商品IDがあるか</b>で判定しており、申請どおりの2,189件を計上しています。<br>
@@ -4227,6 +4239,72 @@ function renderWriteoffSection() {
     renderSimpleTableInto(id, cols(label),
       data.map(d => [d.name, d.count, d.loss_amount, d.count ? d.loss_amount / d.count : null]), 10);
   });
+
+  // 起因区分(販売起因/買取起因/その他)のKPI
+  const originEl = document.getElementById('writeoffOriginKpi');
+  if (originEl) {
+    const od = buildDimBreakdownGeneric(
+      (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS), 'origin', WRITEOFF_FIELDS, granularity, periodKey, rowFilter);
+    const byName = new Map(od.map(d => [d.name, d]));
+    const order = ['買取起因(出品前)', '販売起因(出荷後)', 'その他・不明'];
+    originEl.innerHTML = order.map(k => {
+      const d = byName.get(k) || { count: 0, loss_amount: 0 };
+      const share = cnt ? (d.count / cnt) : null;
+      return metricSimpleCardHtml(k,
+        fmtInt(d.count) + '点' + (share === null ? '' : '（' + fmtPct(share) + '）') +
+        '<br>' + fmtYen(d.loss_amount));
+    }).join('');
+  }
+
+  // 雑損原因別
+  const reasonData = buildDimBreakdownGeneric(
+    (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS), 'reason', WRITEOFF_FIELDS, granularity, periodKey, rowFilter);
+  reasonData.sort((a, b) => b.count - a.count);
+  // 起因区分と「商品マスタに残っているか」を突き合わせられるよう、原因ごとの内訳も出す
+  const inMasterByReason = new Map();
+  (typeof WRITEOFF_ROWS === 'undefined' ? [] : WRITEOFF_ROWS)
+    .filter(r => (periodKey === '__ALL__' || periodKeyFor(r, granularity).key === periodKey) && (!rowFilter || rowFilter(r)))
+    .forEach(r => {
+      const o = inMasterByReason.get(r.reason) || { yes: 0, all: 0 };
+      o.all += r.count || 0;
+      if (r.in_master === 'あり') o.yes += r.count || 0;
+      inMasterByReason.set(r.reason, o);
+    });
+  renderSimpleTableInto('writeoffReasonTable', [
+    { name: '雑損原因' },
+    { name: '起因区分' },
+    { name: '雑損 点数', formatter: c => fmtInt(c) },
+    { name: '構成比', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) },
+    { name: '損失額(円)', formatter: c => fmtYen(c) },
+    { name: '1点あたり(円)', formatter: c => (c === null || c === undefined) ? '-' : fmtYen(c) },
+    { name: '商品マスタに残っている率', formatter: c => (c === null || c === undefined) ? '-' : fmtPct(c) }
+  ], reasonData.map(d => {
+    const im = inMasterByReason.get(d.name);
+    return [d.name, writeoffOriginOf(d.name), d.count, cnt ? d.count / cnt : null,
+            d.loss_amount, d.count ? d.loss_amount / d.count : null,
+            im && im.all ? im.yes / im.all : null];
+  }), 20);
+}
+
+// 雑損原因 -> 起因区分。ETL(etl_cs_dashboard.writeoff_origin)と同じ規則。
+const WRITEOFF_ORIGIN_RULES = [
+  ['販売での佐川・アート過失', '販売起因(出荷後)'],
+  ['SR戻り', '販売起因(出荷後)'],
+  ['代替品', '販売起因(出荷後)'],
+  ['クーリングオフ', '買取起因(出品前)'],
+  ['返却要望', '買取起因(出品前)'],
+  ['デバイスロック', '買取起因(出品前)'],
+  ['基準外', '買取起因(出品前)'],
+  ['長期滞留品', '買取起因(出品前)'],
+  ['買取での佐川・ヤマト・アート過失', '買取起因(出品前)'],
+  ['誤商品化', '買取起因(出品前)'],
+  ['商品紛失・棚卸差異', '買取起因(出品前)'],
+  ['警察対応', '買取起因(出品前)']
+];
+function writeoffOriginOf(reason) {
+  const r = (reason || '').trim();
+  for (const [needle, origin] of WRITEOFF_ORIGIN_RULES) if (r.indexOf(needle) >= 0) return origin;
+  return 'その他・不明';
 }
 
 function renderDeficitPage() {
@@ -6486,7 +6564,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/28 13:57 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/28 15:35 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
