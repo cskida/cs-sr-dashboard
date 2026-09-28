@@ -774,7 +774,10 @@
       <div id="writeoffLocTable"></div>
     </div>
   </div>
-  <p class="note">返品された商品のうち、再販できないと判断されて商品V2で「雑損」ステータスになったものです。売上が立たないため<b>買取価格がそのまま損失</b>になります(金額は税抜)。上の赤字(原価割れ)は「売れたが利益が出なかった商品」なので、雑損とは別の損失です。期間キーは他ページと同じ出荷日基準です。</p>
+  <p class="note"><b>雑損＝再販できないと判断され、雑損申請が出された商品です。</b>売上が立たないため<b>買取価格がそのまま損失</b>になります(金額は税抜)。上の赤字(原価割れ)は「売れたが利益が出なかった商品」なので、雑損とは別の損失です。<br>
+  <b>2026-09-28に判定方法を変更しました。</b>以前は商品V2の進捗が「雑損」になっている商品だけを数えていましたが、ステータスの付け漏れで<b>2026年3月以降がまるごと抜け落ち、全期間で157件しか拾えていませんでした</b>。現在は<b>「【リユースカンパニー】雑損申請管理シート」の集約シートに商品IDがあるか</b>で判定しており、申請どおりの2,189件を計上しています。<br>
+  <b>※拠点・カテゴリが「不明」の行について。</b>申請された商品の多くは返品後に出品も出荷もされないため、商品マスタ(商品_出荷／商品_出品待)に行が残っていません。そのぶんは拠点・カテゴリを引けないので「不明」に入れ、日付は<b>申請日</b>、金額は申請シートの買取金額(税込)÷1.1で計上しています。件数と金額の合計は正しく、内訳だけが「不明」に寄る形です。<br>
+  期間キーは、商品マスタで突合できたものは他ページと同じ出荷日基準、突合できなかったものは申請日です。</p>
   </div>
 
   <div class="card insight-box" id="laborCostBox" style="background:#fff8ec;border-color:#f0dfb8;">
@@ -6483,7 +6486,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/28 12:36 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 09/28 13:57 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
