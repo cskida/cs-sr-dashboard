@@ -6564,7 +6564,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 09/28 15:35 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 10/02 05:30 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
