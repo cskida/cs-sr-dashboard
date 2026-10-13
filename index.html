@@ -170,10 +170,11 @@
        「出品待日」を選ぶと、SR・問合せ・返金・質問・出荷指標のすべてを
        「その商品を出品待にした日」で集計し直したものに切り替わる(出品コホート分析)。 -->
   <div class="ctl" id="ctlShipBasis" style="display:none;">
-    <label>基準日(①〜④で使用。SR・返金・質問も切り替わります)</label>
+    <label>見かた・基準日(①〜④で使用。SR・返金・質問も切り替わります)</label>
     <select id="shipBasis">
-      <option value="ship" selected>出荷予定日・登録日(従来)</option>
-      <option value="listing">出品待日(いつ出品した商品か)</option>
+      <option value="ship" selected>発生日ベース(登録日・返金日・出荷日。従来)</option>
+      <option value="product">商品軸(その期間に出荷・出品した商品から出た分)</option>
+      <option value="listing">出品待日(すべて「いつ出品した商品か」で)</option>
     </select>
     <div id="shipBasisNote" style="font-size:11px;color:#8a6d3b;margin-top:3px;"></div>
   </div>
@@ -213,6 +214,13 @@
     <h3>前年同期比(YoY) <span id="yoyPeriodLabelOverall" class="badge"></span></h3>
     <div id="yoyTableOverall"></div>
     <p class="note">「前年同期(着地)」はその期間の最終実績、「前年の同時点まで」は今期と同じ日数ぶんに揃えた前年の実績です。今期がまだ途中の場合、良し悪しは一番右の「同時点比」で判断してください。週次選択時はYoY比較は表示されません。</p>
+  </div>
+
+  <!-- 2026-10-12: 発生日ベース／商品軸の2つの見かたを直近の期間で並べる(引き継ぎメモ_2026-10-11 §4) -->
+  <div class="card table-section" id="twoViewBox" style="display:none;">
+    <h3>2つの見かた（発生日ベース／商品軸） <span id="twoViewBadge" class="badge"></span></h3>
+    <div id="twoViewTable" style="overflow-x:auto;"></div>
+    <p class="note" id="twoViewNote"></p>
   </div>
 
   <h2>推移(選択範囲) <span class="badge" id="ovTrendBadge"></span></h2>
@@ -1246,6 +1254,13 @@ const ROWS_SHIP = rehydrateRows(DATA.rows);
 // 出品数・ジャンク出品はもともと出品待日基準なので両方で同じ値。
 const ROWS_LISTING_RAW = rehydrateRows(DATA.listing_rows);
 const ROWS_LISTING = (ROWS_LISTING_RAW && ROWS_LISTING_RAW.length) ? ROWS_LISTING_RAW : ROWS_SHIP;
+// 商品軸の行(product_stage.py が作る。2026-10-12 追加)。
+//   SR・問合せ・返金 = その商品を「出荷した日」、質問 = その商品を「出品待にした日」に置き直したもの。
+//   出荷・売上・出品は従来と同じ。→ その期間に出荷(出品)した商品から最終的にどれだけ出たかを見る。
+//   直近の期間はまだ出きっていないので、出そろい曲線(PRODUCT_CURVES)で「出そろい○%」を添える。
+const ROWS_PRODUCT_RAW = rehydrateRows(DATA.product_rows);
+const ROWS_PRODUCT = (ROWS_PRODUCT_RAW && ROWS_PRODUCT_RAW.length) ? ROWS_PRODUCT_RAW : null;
+const PRODUCT_CURVES = DATA.product_curves || {};
 // 画面が実際に使う行セット。基準日セレクタで差し替える(既定は従来どおり)。
 let ROWS = ROWS_SHIP;
 const SR_MAJOR_ROWS = rehydrateRows(DATA.sr_major_rows);
@@ -5359,11 +5374,126 @@ function renderOverallMatrix() {
 }
 
 // ---------- 生成: ①全拠点ページ ----------
+// ---------- 2つの見かた(発生日ベース／商品軸)・出そろい(2026-10-12 追加) ----------
+// 出そろい＝「この期間に出荷(出品)した商品から最終的に出る分のうち、データ最終日までに何%出たか」の目安。
+// 過去の実績ペース(PRODUCT_CURVES: 出荷・出品から0〜42日で何%出たか)を、期間内の各日の
+// 出荷数(SR)・売上(返金額)・出品数(質問)で重み付けして平均する。実測ではなく推定。
+const _MAT_ASOF = PRODUCT_CURVES.asof || DATA.data_through || null;
+const _dayMsCache = new Map();
+function _dayMs(ymd) {
+  let v = _dayMsCache.get(ymd);
+  if (v === undefined) { const [y, m, d] = ymd.split('-').map(Number); v = Date.UTC(y, m - 1, d); _dayMsCache.set(ymd, v); }
+  return v;
+}
+function _maturityOf(rows) {
+  if (!_MAT_ASOF || !PRODUCT_CURVES.sr) return null;
+  const H = PRODUCT_CURVES.days || 42, asofMs = _dayMs(_MAT_ASOF);
+  const spec = { sr: ['sr', 'shipped_count'], rf_n: ['rf_n', 'shipped_count'], rf_a: ['rf_a', 'sales_amount'], q: ['q', 'listed_count'] };
+  const out = {};
+  Object.keys(spec).forEach(k => {
+    const curve = PRODUCT_CURVES[spec[k][0]], wf = spec[k][1];
+    if (!curve) { out[k] = null; return; }
+    let num = 0, den = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i], w = r[wf];
+      if (!w) continue;
+      let age = Math.round((asofMs - _dayMs(r.week_start)) / 86400000);
+      age = Math.max(0, Math.min(H, age));
+      num += w * curve[age]; den += w;
+    }
+    out[k] = den ? num / den : null;
+  });
+  return out;
+}
+function periodMaturity(granularity, periodKey, rowFilter) {
+  if (periodKey === '__ALL__') return null;
+  let rows = rowsForPeriod(ROWS_SHIP, granularity, periodKey);
+  if (rowFilter) rows = rows.filter(rowFilter);
+  return _maturityOf(rows);
+}
+function fmtMat(x) { return (x == null) ? '-' : Math.min(100, Math.round(x * 100)) + '%'; }
+function matState(x) {
+  if (x == null) return '';
+  if (x >= 0.9) return '<span style="color:#1e7d3a;font-weight:600;">ほぼ確定</span>';
+  if (x >= 0.5) return '<span style="color:#b26a00;font-weight:600;">途中</span>';
+  return '<span style="color:#b03a2e;font-weight:600;">出始め</span>';
+}
+
+// 直近の期間(新しい順)。週次は選択中の起点曜日、月次は月、それ以外は週次で見る。
+function twoViewPeriods(granularity, n) {
+  const g = (granularity === 'month') ? 'month' : 'week';
+  const ps = availablePeriods(g).filter(p => p.key != null && (g === 'month' ? (p.key + '-01') >= DAILY_FROM : p.key >= DAILY_FROM));
+  return { g, list: ps.slice(-n).reverse() };
+}
+
+function renderTwoViews() {
+  const box = document.getElementById('twoViewBox');
+  if (!box) return;
+  if (!ROWS_PRODUCT) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  const { g, list } = twoViewPeriods(granSel.value, 6);
+  const f = ovRowFilter();
+  const pick = (arr, key) => { let rs = rowsForPeriod(arr, g, key); return f ? rs.filter(f) : rs; };
+  const cols = list.map(p => {
+    const evRows = pick(ROWS_SHIP, p.key);
+    const ev = emptyAgg(); evRows.forEach(r => addInto(ev, r));
+    const co = emptyAgg(); pick(ROWS_PRODUCT, p.key).forEach(r => addInto(co, r));
+    return { label: p.label.replace(/^\S+\s/, ''), ev: deriveRates(ev), co: deriveRates(co), mat: _maturityOf(evRows) };
+  });
+  document.getElementById('twoViewBadge').textContent =
+    (g === 'month' ? '月次' : '週次') + ' 直近' + cols.length + (g === 'month' ? 'か月' : '週') + '（左が最新）/ ' + ovLocLabel() + ' × ' + ovCatLabel() +
+    (_MAT_ASOF ? ' / データ最終日 ' + _MAT_ASOF : '');
+  const th = 'style="padding:6px 8px;border-bottom:2px solid #d0d7e2;text-align:right;white-space:nowrap;background:#f5f7fb;"';
+  const tdL = 'style="padding:5px 8px;border-bottom:1px solid #eef1f5;white-space:nowrap;text-align:left;"';
+  const td = 'style="padding:5px 8px;border-bottom:1px solid #eef1f5;text-align:right;white-space:nowrap;"';
+  const sec = t => '<tr><td colspan="' + (cols.length + 1) + '" style="padding:8px 8px 4px;font-weight:700;color:#2455c9;border-bottom:1px solid #d0d7e2;">' + t + '</td></tr>';
+  const row = (label, fn, extra) => '<tr' + (extra || '') + '><td ' + tdL + '>' + label + '</td>' + cols.map(c => '<td ' + td + '>' + fn(c) + '</td>').join('') + '</tr>';
+  const est = (rate, m) => (rate == null || m == null || m < 0.5 || m >= 0.9) ? '' : fmtPct(rate / m);
+  const blocks = [
+    { title: '■ ヤフオク質問（出品あたり）', denLabel: '出品数', den: c => fmtInt(c.ev.listed_count),
+      evLabel: '質問数（その期間に来た質問）', ev: c => fmtInt(c.ev.question_count) + '件／' + fmtPct(c.ev.question_rate),
+      coLabel: '質問数（その期間に出品した商品に来た質問）', co: c => fmtInt(c.co.question_count) + '件／' + fmtPct(c.co.question_rate),
+      mk: 'q', rate: c => c.co.question_rate },
+    { title: '■ SR（出荷あたり）', denLabel: '出荷数', den: c => fmtInt(c.ev.shipped_count),
+      evLabel: 'SR件数（その期間に登録されたSR）', ev: c => fmtInt(c.ev.sr_count) + '件／' + fmtPct(c.ev.sr_rate),
+      coLabel: 'SR件数（その期間に出荷した商品から出たSR）', co: c => fmtInt(c.co.sr_count) + '件／' + fmtPct(c.co.sr_rate),
+      mk: 'sr', rate: c => c.co.sr_rate },
+    { title: '■ 返金額（売上あたり・税抜）', denLabel: '売上', den: c => fmtYen(c.ev.sales_amount),
+      evLabel: '返金額（その期間に返金した額）', ev: c => fmtYen(c.ev.refund_amount) + '／' + fmtPct(c.ev.refund_rate),
+      coLabel: '返金額（その期間に出荷した商品の返金）', co: c => fmtYen(c.co.refund_amount) + '／' + fmtPct(c.co.refund_rate),
+      mk: 'rf_a', rate: c => c.co.refund_rate }
+  ];
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr><th ' + th.replace('text-align:right', 'text-align:left') + '>' +
+    (g === 'month' ? '月' : '週') + '</th>' + cols.map(c => '<th ' + th + '>' + c.label + '</th>').join('') + '</tr></thead><tbody>';
+  blocks.forEach(b => {
+    h += sec(b.title);
+    h += row(b.denLabel, b.den);
+    h += row('［発生日］' + b.evLabel, b.ev);
+    h += row('［商品軸］' + b.coLabel, b.co, ' style="background:#fbfcff;"');
+    h += row('　出そろい（目安）', c => { const m = c.mat ? c.mat[b.mk] : null; return fmtMat(m) + ' ' + matState(m); }, ' style="background:#fbfcff;"');
+    h += row('　［商品軸］の見込み（目安）', c => est(b.rate(c), c.mat ? c.mat[b.mk] : null) || '<span style="color:#bbb;">-</span>', ' style="background:#fbfcff;"');
+  });
+  h += '</tbody></table>';
+  document.getElementById('twoViewTable').innerHTML = h;
+  const cv = PRODUCT_CURVES;
+  const cvTxt = (cv.q && cv.sr) ? ('出そろいの目安は ' + (cv.base_from || '').slice(5).replace('-', '/') + '〜' + (cv.base_to || '').slice(5).replace('-', '/') +
+    ' に出荷・出品した分の実績ペース（7日後：SR ' + fmtMat(cv.sr[7]) + '・返金額 ' + fmtMat(cv.rf_a[7]) + '・質問 ' + fmtMat(cv.q[7]) +
+    '／28日後：SR ' + fmtMat(cv.sr[28]) + '・返金額 ' + fmtMat(cv.rf_a[28]) + '・質問 ' + fmtMat(cv.q[28]) + '）から推定しています（42日たった分を100%とする）。') : '';
+  document.getElementById('twoViewNote').innerHTML =
+    '<b>［発生日ベース］</b>＝その期間に現場に来た量（業務量を見る用）。<b>［商品軸］</b>＝その期間に出荷（質問は出品）した商品から出た分（品質の良し悪しを見る用）。' +
+    '率の分母はどちらも同じ（質問＝出品数、SR＝出荷数、返金額＝売上）。［商品軸］は直近ほどまだ出きっておらず、更新のたびに増えて本当の率に落ち着きます。' +
+    '出そろい90%以上＝<b>ほぼ確定</b>、50〜90%＝<b>途中</b>（見込み＝いまの率÷出そろい）、50%未満＝<b>出始め</b>（見込みは出しません）。' + cvTxt +
+    '良し悪しの比較は「ほぼ確定」の期間どうしで。上の「見かた・基準日」で［商品軸］を選ぶと、このページのグラフ・表もすべて商品軸に切り替わります。' +
+    (cv.link_rate ? ('<br>※［商品軸］は出荷日・出品日がわかる商品だけで数えています（わかった割合：SR・問合せ ' + fmtMat(cv.link_rate.cs) + '・返金 ' + fmtMat(cv.link_rate.refund) + '・質問 ' + fmtMat(cv.link_rate.question) +
+      '。20期の期初＝2025年7月より前に出荷・出品した商品の分などは入りません）。CS週次レポートの［商品軸］と同じ数え方です（拠点・カテゴリの除外条件の違いで0.1ポイント前後ずれることがあります）。') : '');
+}
+
 function renderOverallPage() {
   renderOverallKPIs();
   renderInsights();
   renderYoyProgressBox('yoyBoxOverall', 'yoyTableOverall', 'yoyPeriodLabelOverall',
     granSel.value, periodSel.value, ovRowFilter());
+  renderTwoViews();
   renderOverallTrendCharts();
   renderLocationBreakdown();
   renderOverallLocYoyByMetric();
@@ -6250,6 +6380,64 @@ function isYoyMode() { return granSel.value === 'month'; }
 
 // baseFilter: 破線(比較対象)の絞り込み。省略すると全社(全拠点×全カテゴリ)。
 // baseName: 凡例に出す比較対象の名前(例「全社平均(カメラ)」)。
+// ---------- 商品軸のグラフ：まだ出そろっていない期間を薄く表示(2026-10-12 追加) ----------
+// 見かた＝商品軸のときだけ。出そろい(目安)が90%未満の期間は、棒を薄い色・折れ線を点線＋白抜きの点にする。
+const MAT_KEY_OF = { inquiry: 'sr', sr: 'sr', refund: 'rf_a', profit: 'rf_a', question: 'q' };
+const MAT_DONE = 0.9;
+function _hexA(hex, a) {
+  const h = hex.replace('#', ''); const n = parseInt(h, 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+// mats: ラベルごとの出そろい(0〜1。対象外は null)。barIdx/lineIdx: 薄くする系列の番号
+function fadeIncomplete(cfg, mats, barIdxs, lineIdxs) {
+  if (!mats || !mats.some(m => m != null && m < MAT_DONE)) return cfg;
+  const inc = i => mats[i] != null && mats[i] < MAT_DONE;
+  const ds = cfg.data.datasets;
+  barIdxs.forEach(bi => {
+    const d = ds[bi]; if (!d) return;
+    const c = d.backgroundColor;
+    d.backgroundColor = mats.map((m, i) => inc(i) ? _hexA(c, 0.28) : c);
+    d.borderColor = mats.map((m, i) => inc(i) ? c : 'rgba(0,0,0,0)');
+    d.borderWidth = mats.map((m, i) => inc(i) ? 1 : 0);
+    d.borderDash = [3, 2];
+  });
+  lineIdxs.forEach(li => {
+    const d = ds[li]; if (!d) return;
+    const c = d.borderColor;
+    d.pointBackgroundColor = mats.map((m, i) => inc(i) ? '#fff' : c);
+    d.pointBorderColor = c;
+    d.pointRadius = mats.map((m, i) => inc(i) ? 3.5 : 3);
+    d.segment = { borderDash: ctx => inc(ctx.p1DataIndex) ? [4, 3] : undefined,
+                  borderColor: ctx => inc(ctx.p1DataIndex) ? _hexA(c, 0.55) : undefined };
+  });
+  const o = cfg.options || (cfg.options = {});
+  o.plugins = o.plugins || {};
+  o.plugins.subtitle = { display: true, text: '商品軸：薄い色・点線の期間はまだ出そろっていません(出そろい90%未満。今後の更新で増えます)',
+                         color: '#b26a00', font: { size: 10 }, padding: { bottom: 4 } };
+  o.plugins.tooltip = o.plugins.tooltip || {};
+  o.plugins.tooltip.callbacks = o.plugins.tooltip.callbacks || {};
+  o.plugins.tooltip.callbacks.footer = items => {
+    if (!items.length) return '';
+    const m = mats[items[0].dataIndex];
+    return (m == null) ? '' : ('出そろい(目安) ' + fmtMat(m) + (m >= MAT_DONE ? '・ほぼ確定' : '・途中'));
+  };
+  return cfg;
+}
+// 期(fyNum)×月 → 'YYYY-MM'。データにある年月から逆引きする(決算月の定義は fiscalInfo に任せる)。
+let _yoyYmMap = null;
+function yoyYmOf(fy, mm) {
+  if (!_yoyYmMap) {
+    _yoyYmMap = new Map();
+    ROWS_SHIP.forEach(r => {
+      const ym = r.year_month; if (!ym) return;
+      const k = fiscalInfo(ym).fyNum + '|' + parseInt(ym.split('-')[1], 10);
+      if (!_yoyYmMap.has(k)) _yoyYmMap.set(k, ym);
+    });
+  }
+  return _yoyYmMap.get(fy + '|' + mm) || null;
+}
+function productModeOn() { return !!ROWS_PRODUCT && ROWS === ROWS_PRODUCT; }
+
 function renderComparisonTrendCharts(prefix, rowFilter, baseFilter, baseName) {
   const granularity = granSel.value;
   const base = baseFilter || null;
@@ -6271,17 +6459,39 @@ function renderComparisonTrendCharts(prefix, rowFilter, baseFilter, baseName) {
     { key: 'junk', bar: 'junk_listed_count', line: 'junk_listed_rate', barLabel: 'ジャンク出品件数', lineLabel: 'ジャンク出品率', baseLabel: '平均ジャンク出品率', leftLabel: '件数', money: false }
   ];
 
+  // 商品軸のときは、期間ごとの出そろい(目安)を求めておく(90%未満の期間を薄く表示するため)
+  const prod = productModeOn();
+  const matByKey = new Map();
+  const matOf = key => {
+    if (!prod || key == null) return null;
+    if (!matByKey.has(key)) matByKey.set(key, periodMaturity(granularity, key, rowFilter));
+    return matByKey.get(key);
+  };
   specs.forEach(s => {
+    const mk = MAT_KEY_OF[s.key];
     if (yoySeries && yoySeries.fyNums.length > 1) {
       // 月次では期をまたいだ同月比較(昨対)にする。比較対象の率は破線で重ねる。
-      renderChart(prefix + '_' + s.key, yoyMonthlyConfig(
+      const cfg = yoyMonthlyConfig(
         yoySeries, s.bar, s.line, s.barLabel, s.lineLabel, s.leftLabel, s.money,
-        yoyBase, basePrefix));
+        yoyBase, basePrefix);
+      if (prod && mk) {
+        // 最新の期の系列だけが対象(過去の期はすでに出そろっている)
+        const fy = yoySeries.fyNums[yoySeries.fyNums.length - 1];
+        const mats = yoySeries.months.map(mm => {
+          const ym = yoyYmOf(fy, mm); if (!ym) return null;
+          const m = matOf(ym); return m ? m[mk] : null;
+        });
+        const n = yoySeries.fyNums.length;
+        fadeIncomplete(cfg, mats, [n - 1], [2 * n - 1]);
+      }
+      renderChart(prefix + '_' + s.key, cfg);
     } else {
-      renderChart(prefix + '_' + s.key, dualAxisWithBaselineConfig(
+      const cfg = dualAxisWithBaselineConfig(
         labels, trendSel.map(t => t[s.bar]), trendSel.map(t => t[s.line]), trendAll.map(t => t[s.line]),
         s.barLabel, s.lineLabel, basePrefix + s.lineLabel, s.leftLabel, s.money
-      ));
+      );
+      if (prod && mk) fadeIncomplete(cfg, trendSel.map(t => { const m = matOf(t.key); return m ? m[mk] : null; }), [0], [1]);
+      renderChart(prefix + '_' + s.key, cfg);
     }
   });
 }
@@ -6368,6 +6578,7 @@ function renderCategoryPage() {
 
 // ---------- ページ切替 ----------
 function renderPageContent() {
+  try { updateShipBasisNote(); } catch (e) { /* 起動直後は未定義のことがある */ }
   if (currentPage === 'overall') renderOverallPage();
   else if (currentPage === 'allcategory') renderAllCategoryPage();
   else if (currentPage === 'catdetail') renderCatDetailPage();
@@ -6516,18 +6727,34 @@ const shipBasisNote = document.getElementById('shipBasisNote');
 const SHIP_BASIS_PAGES = ['overall', 'allcategory', 'catdetail', 'detail'];
 function syncShipBasisVisibility() {
   if (!ctlShipBasis) return;
-  const show = SHIP_BASIS_PAGES.includes(currentPage) && ROWS_LISTING !== ROWS_SHIP;
+  const show = SHIP_BASIS_PAGES.includes(currentPage) && (ROWS_LISTING !== ROWS_SHIP || !!ROWS_PRODUCT);
+  // 商品軸のデータが無い(古いJSON)ときは選択肢を隠す
+  if (shipBasisSel) Array.prototype.forEach.call(shipBasisSel.options, o => {
+    if (o.value === 'product') o.hidden = o.disabled = !ROWS_PRODUCT;
+    if (o.value === 'listing') o.hidden = o.disabled = (ROWS_LISTING === ROWS_SHIP);
+  });
   ctlShipBasis.style.display = show ? 'flex' : 'none';
 }
 function updateShipBasisNote() {
   if (!shipBasisNote) return;
-  shipBasisNote.textContent = (shipBasisSel && shipBasisSel.value === 'listing')
-    ? '※SR・問合せ・返金・質問・出荷指標のすべてが「その商品を出品待にした日」基準になります。直近の期間は、まだ落札されていない商品が集計に入らないため件数が少なめに出ます(率は影響が小さめ)。'
-    : '';
+  const v = shipBasisSel ? shipBasisSel.value : 'ship';
+  if (v === 'listing') {
+    shipBasisNote.textContent = '※SR・問合せ・返金・質問・出荷指標のすべてが「その商品を出品待にした日」基準になります。直近の期間は、まだ落札されていない商品が集計に入らないため件数が少なめに出ます(率は影響が小さめ)。';
+  } else if (v === 'product') {
+    let t = '※商品軸：SR・問合せ・返金は「その商品を出荷した日」、質問は「その商品を出品待にした日」で数えます(出荷・売上・出品はそのまま)。直近の期間はまだ出きっていないため、更新のたびに増えて本当の率に落ち着きます。';
+    try {
+      const mt = periodMaturity(granSel.value, periodSel.value, null);
+      if (mt) t += ' 選択中の期間の出そろい(目安)：SR ' + fmtMat(mt.sr) + '・返金額 ' + fmtMat(mt.rf_a) + '・質問 ' + fmtMat(mt.q) + '。';
+    } catch (e) { /* 出そろいが出せなくても本体は表示する */ }
+    shipBasisNote.textContent = t;
+  } else {
+    shipBasisNote.textContent = '';
+  }
 }
 if (shipBasisSel) {
   shipBasisSel.addEventListener('change', () => {
-    ROWS = (shipBasisSel.value === 'listing') ? ROWS_LISTING : ROWS_SHIP;
+    ROWS = (shipBasisSel.value === 'listing') ? ROWS_LISTING
+         : (shipBasisSel.value === 'product' && ROWS_PRODUCT) ? ROWS_PRODUCT : ROWS_SHIP;
     clearPerfCaches();
     const keep = periodSel.value;
     populatePeriodSelect();
@@ -6576,7 +6803,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 10/12 00:58 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 10/13 00:37 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
