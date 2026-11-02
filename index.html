@@ -115,6 +115,23 @@
   .note { font-size:11.5px; color:#888; margin-top:16px; line-height:1.6; }
   .badge { display:inline-block; padding:2px 8px; border-radius:10px; background:#eef1f5; color:#555; font-size:11px; margin-left:6px; }
   .drill-title { font-size:16px; font-weight:700; margin:0 0 4px; color:#12203f; }
+  .ev-tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin-bottom:14px; }
+  .ev-tile { border-radius:10px; padding:14px 16px; border:1px solid #e3e5e8; }
+  .ev-tile .t { font-size:13px; color:#444; font-weight:700; }
+  .ev-tile .v { font-size:30px; font-weight:700; margin:4px 0 6px; color:#12203f; }
+  .ev-tile .s { font-size:12px; color:#555; line-height:1.8; }
+  .ev-badge { display:inline-block; padding:1px 9px; border-radius:12px; font-weight:700; font-size:12px; border:1px solid rgba(0,0,0,0.06); }
+  .ev-table { border-collapse:collapse; font-size:12.5px; width:100%; }
+  .ev-table th, .ev-table td { border:1px solid #e3e5e8; padding:6px 8px; text-align:right; white-space:nowrap; }
+  .ev-table th:first-child, .ev-table td:first-child { text-align:left; }
+  .ev-table thead th { background:#f5f6f8; }
+  .ev-heat td { min-width:46px; text-align:center; }
+  .ev-heat td:first-child { position:sticky; left:0; background:#fff; z-index:1; }
+  .ev-up { color:#b91c1c; font-weight:600; }
+  .ev-down { color:#1d4ed8; font-weight:600; }
+  .ev-summary { font-size:13.5px; line-height:1.9; }
+  .ev-grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; margin-bottom:20px; }
+  @media (max-width: 900px) { .ev-grid2 { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -123,7 +140,8 @@
 <div class="sub" id="subHeader">読み込み中...</div>
 
 <div class="page-nav">
-  <button class="page-nav-btn active" id="navBtnOverall" type="button">① 拠点×カテゴリ</button>
+  <button class="page-nav-btn active" id="navBtnEval" type="button">⓪ 評価(目標対比・増減の分解)</button>
+  <button class="page-nav-btn" id="navBtnOverall" type="button">① 拠点×カテゴリ</button>
   <button class="page-nav-btn" id="navBtnAllCategory" type="button">② 全カテゴリ</button>
   <button class="page-nav-btn" id="navBtnCatDetail" type="button">③ カテゴリ詳細</button>
   <button class="page-nav-btn" id="navBtnCondition" type="button">⑤ コンディション</button>
@@ -131,7 +149,7 @@
   <button class="page-nav-btn" id="navBtnProfitVariance" type="button">⑦ 粗利差異</button>
   <button class="page-nav-btn" id="navBtnDeficit" type="button">⑧ 赤字(原価割れ)</button>
   <button class="page-nav-btn" id="navBtnFinalProfit" type="button">⑨ 最終利益</button>
-  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑩ SRリピーター・ロイヤルカスタマー</button>
+  <button class="page-nav-btn" id="navBtnCustomer" type="button">⑩ SR多発顧客・ロイヤルカスタマー</button>
   <button class="page-nav-btn" id="navBtnCancel" type="button">⑪ キャンセル状況</button>
 </div>
 
@@ -180,8 +198,81 @@
   </div>
 </div>
 
+<!-- ============ ⓪ 評価ページ(2026-11-02 追加。月間・クオーター・半期・通期の評価) ============ -->
+<div class="page-section active" id="page-eval">
+  <p class="drill-title" id="evTitle">評価</p>
+  <div class="controls" style="margin-bottom:14px;">
+    <div class="ctl">
+      <label>期間の単位</label>
+      <select id="evGran">
+        <option value="month" selected>月間</option>
+        <option value="quarter">クオーター</option>
+        <option value="half">半期</option>
+        <option value="year">通期</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>対象期間</label>
+      <select id="evPeriod"></select>
+    </div>
+    <div class="ctl">
+      <label>比べる相手（2〜4で使用）</label>
+      <select id="evBase">
+        <option value="prev" selected>前の期間</option>
+        <option value="yoy">前年同期</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>増減を見る指標（2・3で使用）</label>
+      <select id="evMetric">
+        <option value="sr" selected>SR件数</option>
+        <option value="rf">返金額</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label>配送事故（案件名に「事故確定」。2〜4で使用）</label>
+      <select id="evAccident">
+        <option value="in" selected>含む</option>
+        <option value="ex">除く</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card insight-box" style="margin-bottom:18px;">
+    <h3>この期間のまとめ（自動）</h3>
+    <div class="ev-summary" id="evSummary">読み込み中...</div>
+  </div>
+
+  <h2>1. 全社の目標対比 <span class="badge" id="evTargetBadge"></span></h2>
+  <div class="ev-tiles" id="evTiles"></div>
+  <div class="card table-section">
+    <div id="evTargetTable"></div>
+    <p class="note" id="evTargetNote"></p>
+  </div>
+
+  <h2>2. 増減の分解（どこが何件押し上げたか） <span class="badge" id="evDecompBadge"></span></h2>
+  <div class="card" style="margin-bottom:12px;"><div class="ev-summary" id="evDecompTotal"></div></div>
+  <div class="ev-grid2">
+    <div class="card"><h3>拠点別（増減の大きい順）</h3><div id="evDecompLocWrap"><canvas id="evDecompLoc"></canvas></div></div>
+    <div class="card"><h3>カテゴリ別（増減の大きい上位15）</h3><div id="evDecompCatWrap"><canvas id="evDecompCat"></canvas></div></div>
+  </div>
+  <p class="note" style="margin-top:-8px;margin-bottom:20px;">灰色＝出荷（返金額のときは売上）が増えた分（＝出荷の増減 × 前の率）。オレンジ＝率が変わった分（＝今の出荷 × 率の差）。2つを足すと増減の合計になります。オレンジが大きい拠点・カテゴリほど「出荷が増えたからではなく、起きやすくなった」ことを示します。棒にマウスを乗せると前→今の件数・率が出ます。</p>
+
+  <h2>3. 拠点×カテゴリの増減ヒートマップ <span class="badge" id="evHeatBadge"></span></h2>
+  <div class="card table-section">
+    <div id="evHeat" style="overflow-x:auto;"></div>
+    <p class="note" id="evHeatNote"></p>
+  </div>
+
+  <h2>4. 拠点別の評価表 <span class="badge" id="evLocBadge"></span></h2>
+  <div class="card table-section">
+    <div id="evLocTable" style="overflow-x:auto;"></div>
+    <p class="note" id="evLocNote"></p>
+  </div>
+</div>
+
 <!-- ============ ① 全拠点ページ ============ -->
-<div class="page-section active" id="page-overall">
+<div class="page-section" id="page-overall">
 
   <!-- ①ページの絞り込み。拠点は共通の拠点セレクタ(locFilter)、カテゴリはこのページ専用の
        複数選択セレクタ。既定は「全拠点 × 全カテゴリ」。ページ内すべてに同じ条件が掛かる。 -->
@@ -267,6 +358,16 @@
         <option value="junk">ジャンク出品 件数・率</option>
       </select>
     </div>
+  </div>
+  <!-- 2026-11-02: 選んだ指標の率を全拠点ぶん1枚に重ねた折れ線(全社平均は黒い太線) -->
+  <div class="card" style="margin-bottom:14px;">
+    <h3 id="ovLocOverlayTitle">全拠点の率を1枚に重ねた推移</h3>
+    <div style="margin-bottom:6px;">
+      <button type="button" id="ovOverlayHideAll" style="font-size:12px;padding:3px 10px;">拠点の線を全部消す</button>
+      <button type="button" id="ovOverlayShowAll" style="font-size:12px;padding:3px 10px;">全部出す</button>
+    </div>
+    <div style="position:relative;height:440px;"><canvas id="ovLocYoyOverlay"></canvas></div>
+    <p class="note" style="margin-top:6px;">黒い太線＝全社平均。右の凡例の拠点名をクリックすると、その拠点の線を消したり出したりできます（「全部消す」→見たい拠点だけクリックすると比べやすくなります）。期間粒度・カテゴリ・見かた（基準日）の設定に連動します。<span id="ovOverlayPartialNote"></span></p>
   </div>
   <div class="mini-charts-grid" id="ovLocYoyByMetricGrid"></div>
   <p class="note" id="ovLocYoyMetricNote"></p>
@@ -956,7 +1057,7 @@
 <div class="page-section" id="page-customer">
 
   <div class="seg-tabs">
-    <button class="seg-tab-btn active" id="segBtnSrRepeater" type="button">SRリピーター</button>
+    <button class="seg-tab-btn active" id="segBtnSrRepeater" type="button">SR多発顧客</button>
     <button class="seg-tab-btn" id="segBtnLoyalCustomer" type="button">ロイヤルカスタマー</button>
   </div>
 
@@ -1300,7 +1401,7 @@ const ITEM_DETAIL_ROWS = rehydrateRows(DATA.item_detail_rows);
 // ⑥粗利差異ページ: コンディション別・価格帯別に上振れ/下振れを分解した行
 const VARIANCE_CONDITION_ROWS = rehydrateRows(DATA.variance_condition_rows);
 const VARIANCE_BAND_ROWS = rehydrateRows(DATA.variance_band_rows);
-// ⑨ SRリピーター・ロイヤルカスタマー分析。1行=1顧客(名寄せ済みクラスタ)で、
+// ⑨ SR多発顧客・ロイヤルカスタマー分析。1行=1顧客(名寄せ済みクラスタ)で、
 // segment 列が 'sr_repeater' / 'loyal_customer' のどちらのセグメントかを表す。
 // 匿名ラベルと数値指標のみで、氏名・住所・電話番号等の個人情報は含まれない。
 const CUSTOMER_SEGMENT_ROWS = rehydrateRows(DATA.customer_segment_rows);
@@ -1632,7 +1733,7 @@ const ctlWeekStart = document.getElementById('ctlWeekStart');
 const periodSel = document.getElementById('period');
 const ctlLoc = document.getElementById('ctlLoc');
 
-let currentPage = 'overall'; // 'overall' | 'location' | 'allcategory' | 'category'
+let currentPage = 'eval'; // 'overall' | 'location' | 'allcategory' | 'category'
 
 const NUM_FIELDS = [
   'inquiry_count', 'sr_count', 'refund_amount', 'refund_count', 'return_shipping_cost',
@@ -4777,12 +4878,12 @@ function renderCancelPage() {
   document.addEventListener('DOMContentLoaded', () => {});
 });
 
-// ---------- ⑨ SRリピーター・ロイヤルカスタマー分析ページ ----------
+// ---------- ⑨ SR多発顧客・ロイヤルカスタマー分析ページ ----------
 // 顧客数が多い(ロイヤルカスタマーは約2万人)ため、セグメントごとの行配列・集計値は
 // 初回計算時にキャッシュし、タブを切り替えるたびに全行を走査し直さないようにする。
 const CUSTOMER_SEGMENTS = {
   sr_repeater: {
-    title: 'SRリピーター(SR発生件数 上位20%)',
+    title: 'SR多発顧客(SR発生件数 上位20%)',
     desc: 'SRが1件以上発生した顧客を母集団として、SR発生件数の多い順に並べた上位20%の顧客です。'
         + 'SRを繰り返し起こしている顧客層の規模と、その顧客層がもたらす返金額・最終利益への影響を確認できます。'
   },
@@ -5209,6 +5310,7 @@ function renderOverallLocYoyByMetric() {
 
   const rank = buildBreakdown(gran, 'location', '__ALL__', catF);
   const order = rank.slice().sort((a, b) => (b[bar] || 0) - (a[bar] || 0)).map(d => d.name);
+  renderOvLocOverlay(line, lineLabel, gran, catF, trendBase);
   grid.innerHTML = order.map((l, i) =>
     '<div class="card mini-chart-card"><h4>' + l + '</h4><canvas id="ovLocYoy_' + i + '"></canvas></div>').join('');
   const note = document.getElementById('ovLocYoyMetricNote');
@@ -6660,10 +6762,471 @@ function renderCategoryPage() {
 
 // ---------- 生成: ⑤拠点×カテゴリページ(拠点・カテゴリの両方を選択した組合せ) ----------
 
+// ================= ⓪ 評価ページ(2026-11-02 ももさん指示・引き継ぎメモ_2026-11-02_ダッシュボード評価ページ.md) =================
+// 月間・クオーター・半期・通期で「全社の目標対比」「増減の分解」「拠点×カテゴリの増減ヒートマップ」「拠点別の評価表」を出す。
+// ・数字は常に発生日ベース(ROWS_SHIP。上の「見かた・基準日」には連動しない)。目標は21期の元の目標(budget_21th.py)。
+// ・全社の目標対比は常に配送事故込みで判定(SR早見表と同じ決まり)。配送事故の切替は 2〜4 にだけ効く。
+// ・判定の目安は SR早見表のランキングと同じ：目標以下＝目標内／1.1倍まで＝あと少し／1.25倍まで＝要注意／それ以上＝危険。
+// ・増減の分解：増減 = 出荷が増えた分((今の出荷-前の出荷)×前の率) + 率が変わった分(残り＝今の出荷×率の差)。合計は必ず増減に一致する。
+const TARGETS21 = {"2026-07":{"ship":20760,"srr":0.023,"sr":478,"refr":0.023,"rf":14770000,"cxr":0.0552,"cx":1146},"2026-08":{"ship":24752,"srr":0.023,"sr":569,"refr":0.023,"rf":17350000,"cxr":0.0503,"cx":1244},"2026-09":{"ship":26852,"srr":0.023,"sr":618,"refr":0.023,"rf":18500000,"cxr":0.0485,"cx":1302},"2026-10":{"ship":26209,"srr":0.021,"sr":551,"refr":0.021,"rf":17310000,"cxr":0.0495,"cx":1297},"2026-11":{"ship":26946,"srr":0.021,"sr":566,"refr":0.021,"rf":17550000,"cxr":0.039,"cx":1050},"2026-12":{"ship":27511,"srr":0.021,"sr":577,"refr":0.021,"rf":17180000,"cxr":0.0387,"cx":1065},"2027-01":{"ship":25561,"srr":0.02,"sr":511,"refr":0.018,"rf":14070000,"cxr":0.0341,"cx":871},"2027-02":{"ship":24892,"srr":0.02,"sr":498,"refr":0.018,"rf":13570000,"cxr":0.0365,"cx":909},"2027-03":{"ship":28115,"srr":0.02,"sr":562,"refr":0.018,"rf":15020000,"cxr":0.0314,"cx":882},"2027-04":{"ship":27358,"srr":0.019,"sr":520,"refr":0.017,"rf":13950000,"cxr":0.0301,"cx":823},"2027-05":{"ship":28089,"srr":0.019,"sr":534,"refr":0.017,"rf":14520000,"cxr":0.0332,"cx":933},"2027-06":{"ship":29079,"srr":0.019,"sr":552,"refr":0.017,"rf":14980000,"cxr":0.031,"cx":902}};
+const ACCIDENT_ROWS = rehydrateRows(DATA.accident_rows);
+const EV_LOCS = locations.filter(l => l && l !== '(不明)');
+const EV_MIN_SHIP = 50;
+const EV_JUDGE = [
+  { lab: '◎ 目標内', bg: '#E6F4EA', fg: '#1e7e34' },
+  { lab: '△ あと少し', bg: '#FFF7D1', fg: '#8a6100' },
+  { lab: '！ 要注意', bg: '#FFEBD6', fg: '#b45309' },
+  { lab: '✕ 危険', bg: '#FDE2E2', fg: '#b91c1c' }
+];
+const _evPeriodsCache = new Map();
+function evVal(id, dflt) { const el = document.getElementById(id); return (el && el.value) || dflt; }
+function evPeriods(gran) {
+  const hit = _evPeriodsCache.get(gran);
+  if (hit) return hit;
+  const map = new Map();
+  ROWS_SHIP.forEach(r => {
+    if (DATA_FROM_DATE && r.week_start && r.week_start < DATA_FROM_DATE) return;
+    const pk = periodKeyFor(r, gran);
+    if (pk.key != null && !map.has(pk.key)) map.set(pk.key, pk);
+  });
+  const out = Array.from(map.values()).sort((a, b) => a.sort < b.sort ? -1 : (a.sort > b.sort ? 1 : 0));
+  _evPeriodsCache.set(gran, out);
+  return out;
+}
+function evExists(gran, key) { return (key && evPeriods(gran).some(p => p.key === key)) ? key : null; }
+function evLabelOf(gran, key) { const p = evPeriods(gran).find(x => x.key === key); return p ? p.label : '-'; }
+function evPrevKey(gran, key) { const ps = evPeriods(gran); const i = ps.findIndex(p => p.key === key); return i > 0 ? ps[i - 1].key : null; }
+// 期間に含まれる月('YYYY-MM')の一覧
+function evMonthsOf(gran, key) {
+  if (gran === 'month') return [key];
+  const m = /^(\d+)期(?:-(?:Q(\d)|(上期|下期)))?$/.exec(key);
+  if (!m) return [];
+  const sy = FY_START_Y + (parseInt(m[1], 10) - BASE_FY_NUM);
+  let from = 0, n = 12;
+  if (m[2]) { from = (parseInt(m[2], 10) - 1) * 3; n = 3; }
+  else if (m[3]) { from = m[3] === '上期' ? 0 : 6; n = 6; }
+  const out = [];
+  for (let i = from; i < from + n; i++) {
+    const mm = FY_START_M - 1 + i;
+    out.push((sy + Math.floor(mm / 12)) + '-' + String(mm % 12 + 1).padStart(2, '0'));
+  }
+  return out;
+}
+function evPeriodInfo(gran, key) {
+  const ms = evMonthsOf(gran, key);
+  if (!ms.length) return { months: [], partial: false };
+  const [y, m] = ms[ms.length - 1].split('-').map(Number);
+  const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  const thr = DATA.data_through || '';
+  return { months: ms, start: ms[0] + '-01', end, partial: !!thr && thr < end, through: thr };
+}
+// 21期の元の目標を期間に合成(率は月の予算で重み付け。targets_21.py と同じ考え方)
+function evTarget(months) {
+  if (!months.length || !months.every(m => TARGETS21[m])) return null;
+  const t = { ship: 0, sr: 0, rf: 0, cx: 0, sales: 0, _srw: 0, _cxw: 0 };
+  months.forEach(m => {
+    const b = TARGETS21[m];
+    t.ship += b.ship; t.sr += b.sr; t.rf += b.rf; t.cx += b.cx; t.sales += b.refr ? b.rf / b.refr : 0;
+    t._srw += b.srr * b.ship; t._cxw += b.cxr * b.ship;
+  });
+  t.srr = t.ship ? t._srw / t.ship : null;
+  t.cxr = t.ship ? t._cxw / t.ship : null;
+  t.refr = t.sales ? t.rf / t.sales : null;
+  return t;
+}
+function evEmpty() { return { ship: 0, sales: 0, sr: 0, rf: 0, cx: 0 }; }
+// 期間 × 任意の切り口(dimFn)で 出荷・売上・SR・返金額・キャンセル件数 を集める
+function evAgg(gran, key, dimFn, exAcc) {
+  const map = new Map();
+  if (key == null) return map;
+  const get = k => { let a = map.get(k); if (!a) { a = evEmpty(); map.set(k, a); } return a; };
+  rowsForPeriod(ROWS_SHIP, gran, key).forEach(r => {
+    const a = get(dimFn(r));
+    a.ship += r.shipped_count || 0; a.sales += r.sales_amount || 0;
+    a.sr += r.sr_count || 0; a.rf += r.refund_amount || 0;
+  });
+  if (exAcc) rowsForPeriod(ACCIDENT_ROWS, gran, key).forEach(r => {
+    const a = get(dimFn(r)); a.sr -= r.sr_count || 0; a.rf -= r.refund_amount || 0;
+  });
+  rowsForPeriod(CANCEL_ROWS, gran, key).forEach(r => { get(dimFn(r)).cx += r.count || 0; });
+  return map;
+}
+function evTotal(map) { const t = evEmpty(); map.forEach(a => { for (const k in t) t[k] += a[k]; }); return t; }
+function evRate(a, k) {
+  if (!a) return null;
+  if (k === 'srr') return a.ship ? a.sr / a.ship : null;
+  if (k === 'refr') return a.sales ? a.rf / a.sales : null;
+  if (k === 'cxr') return a.ship ? a.cx / a.ship : null;
+  return null;
+}
+function evJudge(v, t) {
+  if (v == null || t == null || !t) return null;
+  const r = v / t;
+  return EV_JUDGE[r <= 1 ? 0 : (r <= 1.1 ? 1 : (r <= 1.25 ? 2 : 3))];
+}
+function evBadge(j) {
+  if (!j) return '<span style="color:#999">-</span>';
+  return '<span class="ev-badge" style="background:' + j.bg + ';color:' + j.fg + '">' + j.lab + '</span>';
+}
+function evFmt(v, kind) {
+  if (v == null) return '-';
+  if (kind === 'pct') return fmtPct(v);
+  if (kind === 'yen') return fmtYen(v);
+  if (kind === 'cnt') return fmtInt(v) + '件';
+  return fmtInt(v);
+}
+function evSignNum(v, digits) {
+  const s = Math.abs(v).toLocaleString('ja-JP', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return (v < 0 ? '▲' : '+') + s;
+}
+function evDiffHtml(cur, base, kind) {
+  if (cur == null || base == null) return '<span style="color:#999">-</span>';
+  const d = cur - base;
+  let txt;
+  if (kind === 'pct') txt = evSignNum(d * 100, 2) + 'pt';
+  else if (kind === 'yen') txt = (d < 0 ? '▲' : '+') + '¥' + Math.round(Math.abs(d)).toLocaleString('ja-JP');
+  else txt = evSignNum(Math.round(d), 0) + (kind === 'cnt' ? '件' : '');
+  if (kind !== 'pct' && base) txt += '（' + evSignNum(d / base * 100, 1) + '%）';
+  const cls = kind === 'ship' ? '' : (d > 0 ? 'ev-up' : (d < 0 ? 'ev-down' : ''));
+  return '<span class="' + cls + '">' + txt + '</span>';
+}
+function evPopulatePeriods() {
+  const gran = evVal('evGran', 'month');
+  const sel = document.getElementById('evPeriod');
+  if (!sel || (sel.dataset.gran === gran && sel.options.length)) return;
+  const ps = evPeriods(gran);
+  sel.innerHTML = '';
+  ps.slice().reverse().forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.key;
+    o.textContent = p.label + (evPeriodInfo(gran, p.key).partial ? '（途中）' : '');
+    sel.appendChild(o);
+  });
+  // 既定は「締まった最新の期間」(途中の期間しか無いときは最新)
+  const done = ps.filter(p => !evPeriodInfo(gran, p.key).partial);
+  const pick = done.length ? done[done.length - 1] : ps[ps.length - 1];
+  if (pick) sel.value = pick.key;
+  sel.dataset.gran = gran;
+}
+// 増減の分解。metric='sr'(SR件数=率の分母は出荷) / 'rf'(返金額=率の分母は売上)
+function evDecompose(curMap, baseMap, metric, keys) {
+  const num = metric === 'rf' ? 'rf' : 'sr', den = metric === 'rf' ? 'sales' : 'ship';
+  return keys.map(k => {
+    const c = curMap.get(k) || evEmpty(), b = baseMap.get(k) || evEmpty();
+    const rb = b[den] ? b[num] / b[den] : 0;
+    const d = c[num] - b[num];
+    const shipEff = (c[den] - b[den]) * rb;
+    return { name: k, cur: c[num], base: b[num], d, shipEff, rateEff: d - shipEff,
+      rc: c[den] ? c[num] / c[den] : null, rb: b[den] ? rb : null, cden: c[den], bden: b[den] };
+  });
+}
+function evDriver(x, metric) {
+  const a = Math.abs(x.shipEff), b = Math.abs(x.rateEff);
+  const shipWord = metric === 'rf' ? '売上' : '出荷';
+  if (b >= a * 2) return '率' + (x.rateEff >= 0 ? 'の上昇' : 'の改善');
+  if (a >= b * 2) return shipWord + (x.shipEff >= 0 ? 'が増えた分' : 'が減った分');
+  return '率と' + shipWord + 'の両方';
+}
+function evUnit(metric) { return metric === 'rf' ? { div: 10000, lab: '万円', dg: 1 } : { div: 1, lab: '件', dg: 0 }; }
+function evDecompChart(canvasId, wrapId, list, metric) {
+  const u = evUnit(metric);
+  const wrap = document.getElementById(wrapId);
+  if (wrap) { wrap.style.position = 'relative'; wrap.style.height = Math.max(180, list.length * 24 + 80) + 'px'; }
+  const labels = list.map(x => x.name + '（' + evSignNum(x.d / u.div, u.dg) + '）');
+  renderChart(canvasId, {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: (metric === 'rf' ? '売上' : '出荷') + 'が増えた分', data: list.map(x => x.shipEff / u.div), backgroundColor: '#94a3b8', stack: 's' },
+      { label: '率が変わった分', data: list.map(x => x.rateEff / u.div), backgroundColor: '#e0653a', stack: 's' }
+    ] },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: {
+          label: c => c.dataset.label + ': ' + evSignNum(c.parsed.x, u.dg) + u.lab,
+          afterBody: items => {
+            const x = list[items[0].dataIndex];
+            const dl = metric === 'rf' ? '売上' : '出荷';
+            return ['増減の合計: ' + evSignNum(x.d / u.div, u.dg) + u.lab + '（' + (metric === 'rf' ? fmtYen(x.base) + '→' + fmtYen(x.cur) : fmtInt(x.base) + '件→' + fmtInt(x.cur) + '件') + '）',
+              '率: ' + fmtPct(x.rb) + ' → ' + fmtPct(x.rc),
+              dl + ': ' + (metric === 'rf' ? fmtYen(x.bden) + ' → ' + fmtYen(x.cden) : fmtInt(x.bden) + ' → ' + fmtInt(x.cden))];
+          } } }
+      },
+      scales: {
+        x: { stacked: true, title: { display: true, text: '増減（' + u.lab + '）' } },
+        y: { stacked: true, ticks: { font: { size: 11 } } }
+      }
+    }
+  });
+}
+function evRenderTargets(cur, prv, yoy, tgt, info, labels) {
+  const tiles = document.getElementById('evTiles');
+  const rateRows = [['srr', 'SR率'], ['refr', '返金額率'], ['cxr', 'キャンセル率']];
+  if (tiles) tiles.innerHTML = rateRows.map(([k, lab]) => {
+    const v = evRate(cur, k), t = tgt ? tgt[k] : null, j = evJudge(v, t);
+    return '<div class="ev-tile" style="background:' + (j ? j.bg : '#fff') + '">' +
+      '<div class="t">' + lab + '</div><div class="v">' + fmtPct(v) + '</div>' +
+      '<div class="s">目標 ' + (t == null ? '-' : fmtPct(t)) + '　' + evBadge(j) + '<br>' +
+      '前の期間 ' + fmtPct(evRate(prv, k)) + '（' + evDiffHtml(v, evRate(prv, k), 'pct') + '）<br>' +
+      '前年同期 ' + fmtPct(evRate(yoy, k)) + '（' + evDiffHtml(v, evRate(yoy, k), 'pct') + '）</div></div>';
+  }).join('');
+  const defs = [
+    { lab: '出荷数', g: a => a ? a.ship : null, kind: 'ship', t: tgt && tgt.ship, j: 'ship' },
+    { lab: 'SR件数', g: a => a ? a.sr : null, kind: 'cnt', t: tgt && tgt.sr, j: 'cnt' },
+    { lab: 'SR率', g: a => evRate(a, 'srr'), kind: 'pct', t: tgt && tgt.srr, j: 'rate' },
+    { lab: '返金額', g: a => a ? a.rf : null, kind: 'yen', t: tgt && tgt.rf, j: 'cnt' },
+    { lab: '返金額率', g: a => evRate(a, 'refr'), kind: 'pct', t: tgt && tgt.refr, j: 'rate' },
+    { lab: 'キャンセル件数', g: a => a ? a.cx : null, kind: 'cnt', t: tgt && tgt.cx, j: 'cnt' },
+    { lab: 'キャンセル率', g: a => evRate(a, 'cxr'), kind: 'pct', t: tgt && tgt.cxr, j: 'rate' }
+  ];
+  let h = '<table class="ev-table"><thead><tr><th>指標</th><th>実績</th><th>目標</th><th>判定</th><th>目標との差</th>' +
+    '<th>前の期間<br><small>' + labels.prev + '</small></th><th>差</th><th>前年同期<br><small>' + labels.yoy + '</small></th><th>差</th></tr></thead><tbody>';
+  defs.forEach(d => {
+    const v = d.g(cur), t = (d.t == null || d.t === false) ? null : d.t;
+    let judge;
+    if (d.j === 'ship') judge = (t && v != null) ? ('予算比 ' + (v / t * 100).toFixed(0) + '%' + (info.partial ? '（途中）' : '')) : '-';
+    else if (d.j === 'cnt' && info.partial) judge = '<span style="color:#999">期間途中</span>';
+    else judge = evBadge(evJudge(v, t));
+    h += '<tr' + (d.kind === 'pct' ? ' style="font-weight:600"' : '') + '><td>' + d.lab + '</td><td>' + evFmt(v, d.kind) + '</td><td>' + evFmt(t, d.kind) + '</td><td>' + judge + '</td>' +
+      '<td>' + (t == null || (d.j === 'cnt' && info.partial) ? '-' : evDiffHtml(v, t, d.kind)) + '</td>' +
+      '<td>' + evFmt(d.g(prv), d.kind) + '</td><td>' + evDiffHtml(v, d.g(prv), d.kind) + '</td>' +
+      '<td>' + evFmt(d.g(yoy), d.kind) + '</td><td>' + evDiffHtml(v, d.g(yoy), d.kind) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  const box = document.getElementById('evTargetTable');
+  if (box) box.innerHTML = h;
+  const note = document.getElementById('evTargetNote');
+  if (note) note.innerHTML = '目標＝21期の元の目標（budget_21th.py。クオーター・半期・通期の率は月の予算で重み付けして合成）。<b>ここは配送事故込みで判定</b>しています（目標は配送事故込みで達成する数字のため。上の配送事故の切替はここには効きません）。' +
+    '判定の目安：目標以下＝目標内／1.1倍まで＝あと少し／1.25倍まで＝要注意／それ以上＝危険（SR早見表のランキングと同じ）。' +
+    '数字は発生日ベース（SR＝登録日・返金＝返金日・出荷＝出荷予定日・キャンセル＝登録日）。キャンセル率＝キャンセル件数÷出荷数（予算の式。分子と分母の基準日が違うため概算）。' +
+    (info.partial ? '<br><b>この期間はまだ途中です</b>（' + info.through + 'まで）。件数・金額は目標と比べず、前の期間・前年同期とも期間の長さが違う点に注意してください。' : '') +
+    (tgt ? '' : '<br>この期間には目標がありません（目標は21期から）。');
+}
+function evRenderHeat(curLC, baseLC, metric, locOrder) {
+  const u = evUnit(metric);
+  const num = metric === 'rf' ? 'rf' : 'sr', den = metric === 'rf' ? 'sales' : 'ship';
+  const catTot = new Map(), cell = new Map(), catHas = new Set();
+  const keys = new Set([...curLC.keys(), ...baseLC.keys()]);
+  keys.forEach(k => {
+    const [l, c] = k.split('\t');
+    if (EV_LOCS.indexOf(l) < 0) return;
+    const a = curLC.get(k) || evEmpty(), b = baseLC.get(k) || evEmpty();
+    const d = a[num] - b[num];
+    cell.set(k, { d, a, b });
+    catTot.set(c, (catTot.get(c) || 0) + d);
+    if (a[num] || b[num]) catHas.add(c);
+  });
+  const cats = Array.from(catTot.keys()).filter(c => catHas.has(c)).sort((x, y) => catTot.get(y) - catTot.get(x));
+  let maxAbs = 0;
+  cell.forEach(v => { maxAbs = Math.max(maxAbs, Math.abs(v.d)); });
+  const fmtD = v => (Math.abs(v) < (u.div === 1 ? 0.5 : 500)) ? '' : evSignNum(v / u.div, u.dg);
+  const color = v => {
+    if (!maxAbs || !v) return '';
+    const a = 0.1 + 0.75 * Math.min(1, Math.abs(v) / maxAbs);
+    return 'background:' + (v > 0 ? 'rgba(220,38,38,' : 'rgba(37,99,235,') + a.toFixed(2) + ');' + (a > 0.55 ? 'color:#fff;' : '');
+  };
+  let h = '<table class="ev-table ev-heat"><thead><tr><th>拠点＼カテゴリ</th><th>合計</th>' + cats.map(c => '<th>' + c + '</th>').join('') + '</tr></thead><tbody>';
+  const locTot = l => cats.reduce((s, c) => s + ((cell.get(l + '\t' + c) || { d: 0 }).d), 0);
+  locOrder.forEach(l => {
+    const lt = locTot(l);
+    h += '<tr><td><b>' + l + '</b></td><td style="font-weight:700">' + (fmtD(lt) || '0') + '</td>' + cats.map(c => {
+      const v = cell.get(l + '\t' + c);
+      if (!v) return '<td></td>';
+      const tip = l + '×' + c + '：' + (metric === 'rf' ? fmtYen(v.b[num]) + ' → ' + fmtYen(v.a[num]) : fmtInt(v.b[num]) + '件 → ' + fmtInt(v.a[num]) + '件') +
+        '／率 ' + fmtPct(v.b[den] ? v.b[num] / v.b[den] : null) + ' → ' + fmtPct(v.a[den] ? v.a[num] / v.a[den] : null) +
+        '／' + (metric === 'rf' ? '売上 ' + fmtYen(v.b[den]) + ' → ' + fmtYen(v.a[den]) : '出荷 ' + fmtInt(v.b[den]) + ' → ' + fmtInt(v.a[den]));
+      return '<td title="' + tip + '" style="' + color(v.d) + '">' + fmtD(v.d) + '</td>';
+    }).join('') + '</tr>';
+  });
+  h += '<tr style="font-weight:700;background:#f5f6f8"><td>合計</td><td>' + (fmtD(cats.reduce((s, c) => s + catTot.get(c), 0)) || '0') + '</td>' + cats.map(c => '<td>' + (fmtD(catTot.get(c)) || '0') + '</td>').join('') + '</tr>';
+  h += '</tbody></table>';
+  const box = document.getElementById('evHeat');
+  if (box) box.innerHTML = h;
+  const note = document.getElementById('evHeatNote');
+  if (note) note.textContent = '数字は ' + (metric === 'rf' ? '返金額の増減（万円）' : 'SR件数の増減（件）') +
+    '。赤＝増えた（悪化）、青＝減った（改善）。色が濃いほど増減が大きい。マスにマウスを乗せると、前→今の件数・率・' + (metric === 'rf' ? '売上' : '出荷') + 'が出ます。拠点は増減の大きい順、カテゴリは合計の増減が大きい順（左ほど押し上げ）。';
+}
+function evRenderLocTable(curLoc, baseLoc, tgt, baseLabel, exAcc) {
+  const rows = EV_LOCS.map(l => {
+    const c = curLoc.get(l) || evEmpty(), b = baseLoc.get(l) || evEmpty();
+    return { l, c, b, ok: c.ship >= EV_MIN_SHIP, srr: evRate(c, 'srr') };
+  }).sort((x, y) => (y.ok - x.ok) || ((y.srr || 0) - (x.srr || 0)));
+  const jd = (r, k) => r.ok ? evBadge(evJudge(evRate(r.c, k), tgt ? tgt[k] : null)) : '<span style="color:#888">参考（出荷' + EV_MIN_SHIP + '点未満）</span>';
+  const bgOf = (r, k) => { const j = r.ok ? evJudge(evRate(r.c, k), tgt ? tgt[k] : null) : null; return j ? ' style="background:' + j.bg + '"' : ''; };
+  let h = '<table class="ev-table"><thead><tr><th>拠点</th><th>出荷数</th><th>SR件数</th><th>SR率</th><th>判定</th><th>SR率<br><small>' + baseLabel + 'から</small></th>' +
+    '<th>返金額</th><th>返金額率</th><th>判定</th><th>返金額率<br><small>' + baseLabel + 'から</small></th><th>キャンセル率</th><th>判定</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    h += '<tr><td><b>' + r.l + '</b></td><td>' + fmtInt(r.c.ship) + '</td><td>' + fmtInt(r.c.sr) + '件</td>' +
+      '<td' + bgOf(r, 'srr') + '><b>' + fmtPct(evRate(r.c, 'srr')) + '</b></td><td>' + jd(r, 'srr') + '</td><td>' + evDiffHtml(evRate(r.c, 'srr'), evRate(r.b, 'srr'), 'pct') + '</td>' +
+      '<td>' + fmtYen(r.c.rf) + '</td><td' + bgOf(r, 'refr') + '><b>' + fmtPct(evRate(r.c, 'refr')) + '</b></td><td>' + jd(r, 'refr') + '</td><td>' + evDiffHtml(evRate(r.c, 'refr'), evRate(r.b, 'refr'), 'pct') + '</td>' +
+      '<td' + bgOf(r, 'cxr') + '>' + fmtPct(evRate(r.c, 'cxr')) + '</td><td>' + jd(r, 'cxr') + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  const box = document.getElementById('evLocTable');
+  if (box) box.innerHTML = h;
+  const note = document.getElementById('evLocNote');
+  if (note) note.innerHTML = '各拠点の率を全社の目標（' + (tgt ? 'SR率 ' + fmtPct(tgt.srr) + '／返金額率 ' + fmtPct(tgt.refr) + '／キャンセル率 ' + fmtPct(tgt.cxr) : 'この期間は目標なし') + '）と比べています。' +
+    '判定の目安はSR早見表のランキングと同じ（目標以下＝目標内／1.1倍まで＝あと少し／1.25倍まで＝要注意／それ以上＝危険。出荷' + EV_MIN_SHIP + '点未満は参考）。SR率の悪い順。' +
+    (exAcc ? '<b>配送事故を除いた数字</b>です（SR・返金額）。' : '配送事故込みの数字です。');
+}
+function renderEvalPage() {
+  evPopulatePeriods();
+  const gran = evVal('evGran', 'month'), key = evVal('evPeriod', '');
+  if (!key) return;
+  const exAcc = evVal('evAccident', 'in') === 'ex';
+  const metric = evVal('evMetric', 'sr');
+  const baseIsYoy = evVal('evBase', 'prev') === 'yoy';
+  const info = evPeriodInfo(gran, key);
+  const prevKey = evPrevKey(gran, key), yoyKey = evExists(gran, yoyPeriodKey(gran, key));
+  const baseKey = baseIsYoy ? yoyKey : prevKey;
+  const curLabel = evLabelOf(gran, key) + (info.partial ? '（途中）' : '');
+  const lab = { prev: prevKey ? evLabelOf(gran, prevKey) : 'なし', yoy: yoyKey ? evLabelOf(gran, yoyKey) : 'なし' };
+  const baseLabel = baseIsYoy ? '前年同期' : '前の期間';
+  const baseName = baseKey ? evLabelOf(gran, baseKey) : 'なし';
+  const accTxt = exAcc ? '配送事故を除く' : '配送事故込み';
+  const setTxt = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  setTxt('evTitle', '評価：' + curLabel + '（' + { month: '月間', quarter: 'クオーター', half: '半期', year: '通期' }[gran] + '）');
+
+  // 1. 全社の目標対比(常に配送事故込み)
+  const byAll = () => '全社';
+  const cur = evTotal(evAgg(gran, key, byAll, false));
+  const prv = prevKey ? evTotal(evAgg(gran, prevKey, byAll, false)) : null;
+  const yoy = yoyKey ? evTotal(evAgg(gran, yoyKey, byAll, false)) : null;
+  const tgt = evTarget(info.months);
+  setTxt('evTargetBadge', curLabel + ' / 配送事故込み');
+  evRenderTargets(cur, prv, yoy, tgt, info, lab);
+
+  // 2〜4. 増減の分解・ヒートマップ・拠点別の評価表(配送事故の切替が効く)
+  const curLoc = evAgg(gran, key, r => r.location, exAcc), baseLoc = baseKey ? evAgg(gran, baseKey, r => r.location, exAcc) : new Map();
+  const curCat = evAgg(gran, key, r => r.category, exAcc), baseCat = baseKey ? evAgg(gran, baseKey, r => r.category, exAcc) : new Map();
+  const curLC = evAgg(gran, key, r => r.location + '\t' + r.category, exAcc);
+  const baseLC = baseKey ? evAgg(gran, baseKey, r => r.location + '\t' + r.category, exAcc) : new Map();
+  const u = evUnit(metric);
+  const mName = metric === 'rf' ? '返金額' : 'SR件数';
+  const badge = curLabel + ' と ' + baseLabel + '（' + baseName + '）の比較 / ' + mName + ' / ' + accTxt;
+  setTxt('evDecompBadge', badge); setTxt('evHeatBadge', badge);
+  setTxt('evLocBadge', curLabel + ' / ' + accTxt);
+
+  const totC = evTotal(curLoc), totB = evTotal(baseLoc);
+  const tot = evDecompose(new Map([['全体', totC]]), new Map([['全体', totB]]), metric, ['全体'])[0];
+  const locList = evDecompose(curLoc, baseLoc, metric, EV_LOCS).sort((a, b) => b.d - a.d);
+  const catKeys = Array.from(new Set([...curCat.keys(), ...baseCat.keys()]));
+  const catAll = evDecompose(curCat, baseCat, metric, catKeys).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const TOPN = 15;
+  let catList = catAll.slice(0, TOPN).sort((a, b) => b.d - a.d);
+  if (catAll.length > TOPN) {
+    const rest = catAll.slice(TOPN);
+    const s = { name: '（上記以外 ' + rest.length + 'カテゴリの合計）', cur: 0, base: 0, d: 0, shipEff: 0, rateEff: 0, rc: null, rb: null, cden: 0, bden: 0 };
+    rest.forEach(x => { s.cur += x.cur; s.base += x.base; s.d += x.d; s.shipEff += x.shipEff; s.rateEff += x.rateEff; s.cden += x.cden; s.bden += x.bden; });
+    s.rc = s.cden ? s.cur / s.cden : null; s.rb = s.bden ? s.base / s.bden : null;
+    catList = catList.concat([s]);
+  }
+
+  const fmtM = v => metric === 'rf' ? fmtYen(v) : fmtInt(v) + '件';
+  const sgn = v => evSignNum(v / u.div, u.dg) + u.lab;
+  const dEl = document.getElementById('evDecompTotal');
+  if (dEl) dEl.innerHTML = baseKey
+    ? '<b>全体：' + fmtM(tot.base) + ' → ' + fmtM(tot.cur) + '（' + sgn(tot.d) + '）</b>　＝　' +
+      '<span style="color:#475569">' + (metric === 'rf' ? '売上' : '出荷') + 'が増えた分 <b>' + sgn(tot.shipEff) + '</b></span>　＋　' +
+      '<span style="color:#c2410c">率が変わった分 <b>' + sgn(tot.rateEff) + '</b></span>' +
+      '（率 ' + fmtPct(tot.rb) + ' → ' + fmtPct(tot.rc) + '）'
+    : '比べる期間のデータがありません。';
+  evDecompChart('evDecompLoc', 'evDecompLocWrap', locList, metric);
+  evDecompChart('evDecompCat', 'evDecompCatWrap', catList, metric);
+  evRenderHeat(curLC, baseLC, metric, locList.map(x => x.name));
+  evRenderLocTable(curLoc, baseLoc, tgt, baseLabel, exAcc);
+
+  // まとめ(自動)
+  const sm = [];
+  const rateLine = [['srr', 'SR率'], ['refr', '返金額率'], ['cxr', 'キャンセル率']].map(([k, l]) => {
+    const j = evJudge(evRate(cur, k), tgt ? tgt[k] : null);
+    return l + ' <b>' + fmtPct(evRate(cur, k)) + '</b>' + (tgt ? '（目標 ' + fmtPct(tgt[k]) + '：' + (j ? j.lab.replace(/^\S+\s/, '') : '-') + '）' : '');
+  }).join('、');
+  sm.push('・' + rateLine + '　<small>（配送事故込み）</small>');
+  if (baseKey) {
+    sm.push('・' + mName + 'は' + baseLabel + '（' + baseName + '）から <b>' + sgn(tot.d) + '</b>。うち' + (metric === 'rf' ? '売上' : '出荷') + 'が増えた分 ' + sgn(tot.shipEff) + '、率が変わった分 ' + sgn(tot.rateEff) + '。' + (exAcc ? '<small>（配送事故を除く）</small>' : ''));
+    const ups = locList.filter(x => x.d > 0).slice(0, 3);
+    if (ups.length) sm.push('・押し上げた拠点：' + ups.map(x => '<b>' + x.name + '</b> ' + sgn(x.d) + '（' + evDriver(x, metric) + '・率 ' + fmtPct(x.rb) + '→' + fmtPct(x.rc) + '）').join('、'));
+    const downs = locList.filter(x => x.d < 0).sort((a, b) => a.d - b.d).slice(0, 3);
+    if (downs.length) sm.push('・改善した拠点：' + downs.map(x => '<b>' + x.name + '</b> ' + sgn(x.d)).join('、'));
+    const cu = catAll.filter(x => x.d > 0).sort((a, b) => b.d - a.d).slice(0, 4);
+    if (cu.length) sm.push('・押し上げたカテゴリ：' + cu.map(x => '<b>' + x.name + '</b> ' + sgn(x.d) + '（' + evDriver(x, metric) + '）').join('、'));
+    const lc = [];
+    curLC.forEach((a, k) => { if (EV_LOCS.indexOf(k.split('\t')[0]) >= 0) lc.push(k); });
+    baseLC.forEach((a, k) => { if (!curLC.has(k) && EV_LOCS.indexOf(k.split('\t')[0]) >= 0) lc.push(k); });
+    const lcTop = evDecompose(curLC, baseLC, metric, lc).filter(x => x.d > 0).sort((a, b) => b.d - a.d).slice(0, 5);
+    if (lcTop.length) sm.push('・拠点×カテゴリで大きいもの：' + lcTop.map(x => x.name.replace('\t', '×') + ' ' + sgn(x.d)).join('、'));
+  }
+  if (info.partial) sm.push('・<span style="color:#b45309">この期間はまだ途中です（' + info.through + 'まで）。前の期間との件数・金額の比較は期間の長さが違います。</span>');
+  const sEl = document.getElementById('evSummary');
+  if (sEl) sEl.innerHTML = sm.join('<br>');
+}
+['evGran', 'evPeriod', 'evBase', 'evMetric', 'evAccident'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', () => {
+    if (id === 'evGran') { const s = document.getElementById('evPeriod'); if (s) s.dataset.gran = ''; }
+    if (currentPage === 'eval') renderEvalPage();
+  });
+});
+
+// ---------- ①: 13拠点の率を1枚に重ねた推移(2026-11-02 追加) ----------
+const OV_OVERLAY_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c', '#4f46e5', '#0d9488', '#a16207', '#9333ea', '#64748b'];
+function renderOvLocOverlay(lineKey, lineLabel, gran, catF, trendBase) {
+  const ttl = document.getElementById('ovLocOverlayTitle');
+  if (ttl) ttl.textContent = lineLabel + 'の推移（' + EV_LOCS.length + '拠点を1枚に重ねて表示・' + ovCatLabel() + '）';
+  // 最後の期間がまだ途中(例: 月が始まったばかり)だと率が大きく振れて全体が読めなくなるため、この1枚からは外す
+  const thr = DATA.data_through || '';
+  const lastKey = trendBase.length ? trendBase[trendBase.length - 1].key : null;
+  let lastPartial = false;
+  if (lastKey && thr) {
+    if (gran === 'week') { const d = new Date(lastKey + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 6); lastPartial = thr < d.toISOString().slice(0, 10); }
+    else lastPartial = evPeriodInfo(gran, lastKey).partial;
+  }
+  const nUse = trendBase.length - (lastPartial ? 1 : 0);
+  trendBase = trendBase.slice(0, nUse);
+  const pn = document.getElementById('ovOverlayPartialNote');
+  if (pn) pn.textContent = lastPartial ? '※まだ途中の最新期間（' + evLabelOf(gran, lastKey) + '）は、率が大きく振れるためこのグラフから外しています。' : '';
+  const labels = trendBase.map(x => x.label);
+  const pct = v => (v == null ? null : v * 100);
+  const ds = EV_LOCS.map((l, i) => {
+    const t = buildTrendAligned(gran, r => r.location === l && (!catF || catF(r))).slice(0, nUse);
+    const col = OV_OVERLAY_COLORS[i % OV_OVERLAY_COLORS.length];
+    return { label: l, data: t.map(x => pct(x[lineKey])), borderColor: col, backgroundColor: col,
+      borderWidth: 1.6, pointRadius: 2, pointHoverRadius: 5, tension: 0, spanGaps: true };
+  });
+  ds.unshift({ label: '全社平均', data: trendBase.map(x => pct(x[lineKey])), borderColor: '#111', backgroundColor: '#111',
+    borderWidth: 4, pointRadius: 0, tension: 0, spanGaps: true, order: -1 });
+  renderChart('ovLocYoyOverlay', {
+    type: 'line', data: { labels, datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 14, font: { size: 11.5 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + (c.parsed.y == null ? '-' : c.parsed.y.toFixed(2) + '%') } }
+      },
+      scales: { y: { title: { display: true, text: lineLabel + '（%）' }, ticks: { callback: v => v + '%' } } }
+    }
+  });
+}
+function ovOverlayShowAll(show) {
+  const ch = chartRegistry['ovLocYoyOverlay'];
+  if (!ch) return;
+  ch.data.datasets.forEach((d, i) => { if (i > 0) ch.setDatasetVisibility(i, show); });
+  ch.update();
+}
+{
+  const a = document.getElementById('ovOverlayHideAll'), b = document.getElementById('ovOverlayShowAll');
+  if (a) a.addEventListener('click', () => ovOverlayShowAll(false));
+  if (b) b.addEventListener('click', () => ovOverlayShowAll(true));
+}
+
 // ---------- ページ切替 ----------
 function renderPageContent() {
   try { updateShipBasisNote(); } catch (e) { /* 起動直後は未定義のことがある */ }
-  if (currentPage === 'overall') renderOverallPage();
+  if (currentPage === 'eval') renderEvalPage();
+  else if (currentPage === 'overall') renderOverallPage();
   else if (currentPage === 'allcategory') renderAllCategoryPage();
   else if (currentPage === 'catdetail') renderCatDetailPage();
   else if (currentPage === 'condition') renderConditionPage();
@@ -6674,9 +7237,9 @@ function renderPageContent() {
   else renderProfitVariancePage();
 }
 
-const ALL_PAGES = ['overall', 'allcategory', 'catdetail', 'condition', 'priceband', 'profitvariance', 'deficit', 'finprofit', 'customer', 'cancel'];
+const ALL_PAGES = ['eval', 'overall', 'allcategory', 'catdetail', 'condition', 'priceband', 'profitvariance', 'deficit', 'finprofit', 'customer', 'cancel'];
 const PAGE_NAV_MAP = {
-  overall: 'navBtnOverall', allcategory: 'navBtnAllCategory', catdetail: 'navBtnCatDetail',
+  eval: 'navBtnEval', overall: 'navBtnOverall', allcategory: 'navBtnAllCategory', catdetail: 'navBtnCatDetail',
   condition: 'navBtnCondition', priceband: 'navBtnPriceBand',
   profitvariance: 'navBtnProfitVariance', deficit: 'navBtnDeficit', finprofit: 'navBtnFinalProfit',
   customer: 'navBtnCustomer', cancel: 'navBtnCancel'
@@ -6729,7 +7292,7 @@ function syncCtlVisibility(page) {
   ctlLoc.classList.toggle('visible', page === 'overall' || page === 'catdetail' || isDeficitPage(page) ||
     page === 'condition' || page === 'priceband' || page === 'profitvariance');
   const gc = document.getElementById('globalControls');
-  if (gc) gc.style.display = (page === 'customer' || page === 'cancel') ? 'none' : '';
+  if (gc) gc.style.display = (page === 'customer' || page === 'cancel' || page === 'eval') ? 'none' : '';
   syncShipBasisVisibility();
 }
 
@@ -6889,7 +7452,7 @@ if (deficitCatMultiSel) deficitCatMultiSel.addEventListener('change', () => { if
 
 document.getElementById('subHeader').textContent =
   DATA.fiscal_year_label + '(' + DATA.fiscal_year_start + '～) の問合せ・SR・返金・質問データ　最終更新: ' + (DATA.generated_at || '').slice(0,16).replace('T',' ')
-  + '　[ビルド 11/01 11:01 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
+  + '　[ビルド 11/02 03:50 / 商品明細' + (typeof ITEM_DETAIL_ROWS === 'undefined' ? 0 : ITEM_DETAIL_ROWS.length).toLocaleString() + '件]';
 document.getElementById('dataThrough').textContent = DATA.data_through || '-';
 
 syncCtlVisibility(currentPage);   // 初期表示でも拠点セレクタ等の表示条件を合わせる
